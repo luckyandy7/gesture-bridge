@@ -1,0 +1,26 @@
+{
+  "open_palm": {
+    "action": "idle",
+    "cooldown_ms": 0
+  },
+  "point": {
+    "action": "move_cursor",
+    "cooldown_ms": 0
+  },
+  "pinch": {
+    "action": "left_click",
+    "cooldown_ms": 800
+  },
+  "peace": {
+    "action": "next_slide",
+    "cooldown_ms": 1100
+  },
+  "thumbs_up": {
+    "action": "scroll_up",
+    "cooldown_ms": 450
+  },
+  "thumbs_down": {
+    "action": "scroll_down",
+    "cooldown_ms": 450
+  }
+}
