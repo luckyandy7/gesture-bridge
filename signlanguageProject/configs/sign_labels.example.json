@@ -1,0 +1,15 @@
+{
+  "sequence_length": 30,
+  "labels": [
+    "hello",
+    "thanks",
+    "yes",
+    "no",
+    "help",
+    "stop",
+    "ok",
+    "love",
+    "sorry",
+    "bathroom"
+  ]
+}

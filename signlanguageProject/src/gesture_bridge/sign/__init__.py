@@ -1,0 +1,1 @@
+"""Sign-text mode package."""
