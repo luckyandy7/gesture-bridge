@@ -1,4 +1,4 @@
-# Gesture Bridge
+# Gesture Bridge - 개발중 ~05.22
 
 웹캠으로 손동작을 인식해서 두 가지 모드로 동작하는 프로젝트다.
 
