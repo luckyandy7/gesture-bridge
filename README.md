@@ -2,7 +2,7 @@
 
 웹캠과 마이크를 입력 장치로 사용해 `PC 제어`, `수화 문장 인식`, `인터랙티브 제스처/음성 체험`을 하나의 프로젝트 안에서 다루는 멀티모달 인터랙션 시스템입니다.
 
-기존 `signlanguageProject`라는 이름은 수화 기능만 떠올리게 해서 현재 범위를 충분히 설명하지 못합니다. 이 저장소는 손동작, 수화 gloss, 한국어 음성 명령, 웹 인터랙션을 연결하는 프로젝트이므로 `Gesture Bridge`를 공식 이름으로 사용합니다.
+이 저장소는 손동작, 수화 gloss, 한국어 음성 명령, 웹 인터랙션을 연결하는 프로젝트이므로 `Gesture Bridge`를 공식 이름으로 사용합니다.
 
 <p align="center">
   <img src="docs/assets/readme-01-overview-ko.png" alt="Gesture Bridge 전체 구조" width="100%" />
