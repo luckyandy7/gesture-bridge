@@ -1,0 +1,61 @@
+<svg width="1200" height="680" viewBox="0 0 1200 680" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <style>
+    text { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Apple SD Gothic Neo", "Noto Sans KR", sans-serif; }
+    .title { font-size: 38px; font-weight: 850; fill: #102027; }
+    .sub { font-size: 17px; font-weight: 500; fill: #5d6c73; }
+    .num { font-size: 15px; font-weight: 900; fill: #0f766e; }
+    .h { font-size: 20px; font-weight: 850; fill: #15262D; }
+    .t { font-size: 14px; font-weight: 650; fill: #5B6B72; }
+  </style>
+  <rect width="1200" height="680" rx="34" fill="#F7FAFA"/>
+  <rect x="54" y="50" width="1092" height="580" rx="30" fill="white" stroke="#D7E2E5"/>
+  <text x="92" y="112" class="title">수화 문장 인식 파이프라인</text>
+  <text x="94" y="147" class="sub">라벨을 수집하고 학습한 뒤, 실시간 gloss 토큰을 문장 메모리와 매칭합니다.</text>
+
+  <g transform="translate(90 235)">
+    <rect width="150" height="140" rx="20" fill="#F2F8F8" stroke="#CFE1E2"/>
+    <text x="22" y="38" class="num">01</text><text x="22" y="74" class="h">데이터 준비</text>
+    <text x="22" y="105" class="t">GKSL, KSL-LEX</text>
+    <text x="22" y="126" class="t">리소스 갱신</text>
+  </g>
+  <g transform="translate(250 305)"><path d="M0 0h48" stroke="#7CAEB2" stroke-width="4"/><path d="M48 0l-12-8v16l12-8z" fill="#7CAEB2"/></g>
+  <g transform="translate(318 235)">
+    <rect width="150" height="140" rx="20" fill="#F6F8FF" stroke="#D5DDF2"/>
+    <text x="22" y="38" class="num">02</text><text x="22" y="74" class="h">라벨 수집</text>
+    <text x="22" y="105" class="t">라벨별 30프레임</text>
+    <text x="22" y="126" class="t">랜드마크 저장</text>
+  </g>
+  <g transform="translate(478 305)"><path d="M0 0h48" stroke="#7CAEB2" stroke-width="4"/><path d="M48 0l-12-8v16l12-8z" fill="#7CAEB2"/></g>
+  <g transform="translate(546 235)">
+    <rect width="150" height="140" rx="20" fill="#F2FBF5" stroke="#D3E8D8"/>
+    <text x="22" y="38" class="num">03</text><text x="22" y="74" class="h">모델 학습</text>
+    <text x="22" y="105" class="t">KNN baseline</text>
+    <text x="22" y="126" class="t">sign classifier</text>
+  </g>
+  <g transform="translate(706 305)"><path d="M0 0h48" stroke="#7CAEB2" stroke-width="4"/><path d="M48 0l-12-8v16l12-8z" fill="#7CAEB2"/></g>
+  <g transform="translate(774 235)">
+    <rect width="150" height="140" rx="20" fill="#FFF8EC" stroke="#E8DCC6"/>
+    <text x="22" y="38" class="num">04</text><text x="22" y="74" class="h">실시간 추론</text>
+    <text x="22" y="105" class="t">웹캠 입력을</text>
+    <text x="22" y="126" class="t">gloss로 변환</text>
+  </g>
+  <g transform="translate(934 305)"><path d="M0 0h48" stroke="#7CAEB2" stroke-width="4"/><path d="M48 0l-12-8v16l12-8z" fill="#7CAEB2"/></g>
+  <g transform="translate(1002 235)">
+    <rect width="150" height="140" rx="20" fill="#F2F8F8" stroke="#CFE1E2"/>
+    <text x="22" y="38" class="num">05</text><text x="22" y="74" class="h">토큰 안정화</text>
+    <text x="22" y="105" class="t">confidence와</text>
+    <text x="22" y="126" class="t">cooldown 적용</text>
+  </g>
+
+  <g transform="translate(300 440)">
+    <rect width="260" height="112" rx="20" fill="#F7FAFA" stroke="#D7E2E5"/>
+    <text x="24" y="46" class="h">06 문장 메모리 검색</text>
+    <text x="24" y="78" class="t">exact → fuzzy → fallback 순서</text>
+  </g>
+  <path d="M642 496H724" stroke="#7CAEB2" stroke-width="4"/><path d="M724 496l-12-8v16l12-8z" fill="#7CAEB2"/>
+  <g transform="translate(746 440)">
+    <rect width="260" height="112" rx="20" fill="#EAF8F5" stroke="#BFE3DB"/>
+    <text x="24" y="46" class="h">07 한국어 문장 출력</text>
+    <text x="24" y="78" class="t">문장, source, score 표시</text>
+  </g>
+</svg>

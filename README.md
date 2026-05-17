@@ -1,287 +1,482 @@
 # Gesture Bridge - 개발중 ~05.22
 
-웹캠으로 손동작을 인식해서 두 가지 모드로 동작하는 프로젝트다.
+웹캠과 마이크를 입력 장치로 사용해 `PC 제어`, `수화 문장 인식`, `인터랙티브 제스처/음성 체험`을 하나의 프로젝트 안에서 다루는 멀티모달 인터랙션 시스템입니다.
 
-- `PC 제어 모드`: 손동작으로 마우스 이동, 클릭, 스크롤, 슬라이드 넘기기
-- `수화 텍스트 모드`: `두 손 + 팔(포즈)` 정보를 같이 보고 제한된 수화 단어를 인식해서 텍스트로 출력
+기존 `signlanguageProject`라는 이름은 수화 기능만 떠올리게 해서 현재 범위를 충분히 설명하지 못합니다. 이 저장소는 손동작, 수화 gloss, 한국어 음성 명령, 웹 인터랙션을 연결하는 프로젝트이므로 `Gesture Bridge`를 공식 이름으로 사용합니다.
 
-중요한 점:
+<p align="center">
+  <img src="docs/assets/readme-01-overview-ko.svg" alt="Gesture Bridge 전체 구조" width="100%" />
+</p>
 
-- 이 프로젝트는 `문장 단위 전체 수화 번역기`가 아니다
-- 현재 수화 모드는 `미리 정한 단어 몇 개`를 인식하는 구조다
-- 먼저 `PC 제어 모드`를 확인하고, 그다음 `수화 데이터 수집 -> 학습 -> 추론` 순서로 쓰는 게 맞다
-- 수화 모드는 현재 `양손과 팔 동작`까지 반영하도록 구성되어 있다
+## 목차
 
-## 1. 처음 한 번만 해야 하는 설치
+- [프로젝트 핵심](#프로젝트-핵심)
+- [기능 한눈에 보기](#기능-한눈에-보기)
+- [빠른 실행](#빠른-실행)
+- [전체 작동 구조](#전체-작동-구조)
+- [모드별 상세 설명](#모드별-상세-설명)
+- [수화 문장 인식 데이터셋과 한계](#수화-문장-인식-데이터셋과-한계)
+- [폴더 구조](#폴더-구조)
+- [주요 명령어](#주요-명령어)
+- [개발과 검증](#개발과-검증)
+- [GitHub 저장소 이름 변경](#github-저장소-이름-변경)
 
-프로젝트 폴더에서 아래 순서대로 실행한다.
+## 프로젝트 핵심
+
+Gesture Bridge는 같은 카메라 입력에서 출발하지만 목적이 다른 기능을 명확히 분리합니다.
+
+| 영역 | 목적 | 실행 위치 | 주요 입력 | 주요 출력 |
+| --- | --- | --- | --- | --- |
+| PC 제어 | 손동작으로 실제 화면을 조작 | Python/OpenCV | 웹캠 손 랜드마크 | 마우스 이동, 클릭, 스크롤, 슬라이드 넘김 |
+| 수화 문장 | 양손과 팔 동작을 gloss 토큰으로 인식하고 한국어 문장으로 조립 | Python/OpenCV/ML | 웹캠 양손 + 팔 포즈 | gloss 토큰, 한국어 문장 후보 |
+| 인터랙티브 체험 | 한국어 음성과 손동작으로 사진, 그림, 효과, 게임, 음악, 3D를 조작 | Next.js 웹앱 | 웹캠 손 추적, 마이크 음성, 마우스 시뮬레이션 | 브라우저 기반 체험 UI |
+
+중요한 전제:
+
+- 수화 문장 모드는 현재 `영상에서 바로 완전한 문장을 번역하는 end-to-end 대형 모델`이 아닙니다.
+- 현재 구조는 `랜드마크 기반 sign/gloss 인식 -> 안정화된 gloss 토큰 누적 -> GKSL 문장 메모리 exact/fuzzy 매칭 -> 한국어 문장 출력` 방식입니다.
+- 단어 기반 출력은 백업으로 유지되어 있으며 `--output-mode words`로 사용할 수 있습니다.
+- 문장 품질은 실제로 수집하고 학습한 gloss 라벨 범위에 따라 달라집니다.
+- 인터랙티브 체험은 실제 카메라가 없어도 마우스 시뮬레이션으로 기능 대부분을 확인할 수 있습니다.
+
+## 기능 한눈에 보기
+
+### 1. PC 제어
+
+- 검지만 펴기: 커서 이동
+- 엄지와 검지 붙이기: 클릭
+- 브이 표시: 다음 슬라이드
+- 엄지 위/아래: 스크롤
+- 안정화 window와 cooldown으로 오작동을 줄임
+- 기본은 dry-run이며 `--live`를 붙여야 실제 OS 입력이 실행됨
+
+### 2. 수화 문장 인식
+
+- 양손 랜드마크와 팔 포즈를 함께 사용
+- 라벨별 landmark sequence 수집
+- KNN baseline 모델 학습
+- 안정화된 예측을 gloss 토큰으로 누적
+- GKSL gloss-to-Korean 문장 메모리로 한국어 문장 후보 출력
+- GKSL, KSL-LEX 기반 확장 라벨 설정 생성 지원
+- AI Hub/NIKL처럼 승인 필요한 데이터셋은 직접 받은 뒤 import 가능
+
+### 3. 인터랙티브 체험 웹앱
+
+브라우저에서 `/interactive`로 실행되는 체험형 UI입니다.
+
+- 사진 모드: floating image 표시, 손/마우스로 이동, 확대/축소, 다음/이전
+- 그림 모드: 손가락/마우스로 공중 드로잉, 펜, 지우개, 색상, 굵기, undo, 저장
+- 날씨 모드: 한국어 음성 명령으로 날씨 패널 표시, API fallback 구조 포함
+- 효과 모드: 포탈, 방어막, 입자 폭발, 레이저, 물결, 바람, 화염 등 original effect
+- 게임 모드: 낙하물 받기, 버블 터뜨리기, Pong, 회피, 슬라이스, 던지기, 반응, 리듬, 타깃
+- 3D 모드: 손 포인터 기반 3D 오브젝트 회전/스케일 체험
+- 음악 모드: 재생, 멈춤, 음소거, 볼륨 조절, 시각화
+- 설정/도움말: 한국어 음성 명령 예시와 제스처 상태 확인
+
+## 이미지로 보는 구조
+
+### 1. 처음 화면의 세 가지 입구
+
+<p align="center">
+  <img src="docs/assets/readme-02-mode-select-ko.svg" alt="처음 화면에서 선택하는 세 가지 기능" width="100%" />
+</p>
+
+### 2. Python 런타임 흐름
+
+<p align="center">
+  <img src="docs/assets/readme-03-python-runtime-ko.svg" alt="Python 런타임에서 PC 제어와 수화 문장 모드가 나뉘는 흐름" width="100%" />
+</p>
+
+### 3. 수화 문장 인식 파이프라인
+
+<p align="center">
+  <img src="docs/assets/readme-04-sign-sentence-pipeline-ko.svg" alt="수화 문장 인식 파이프라인" width="100%" />
+</p>
+
+### 4. 인터랙티브 웹 스테이지 구조
+
+<p align="center">
+  <img src="docs/assets/readme-05-interactive-stage-ko.svg" alt="인터랙티브 웹 스테이지 구조" width="100%" />
+</p>
+
+### 5. 코드 구조 지도
+
+<p align="center">
+  <img src="docs/assets/readme-06-code-map-ko.svg" alt="Gesture Bridge 코드 구조 지도" width="100%" />
+</p>
+
+### 6. 데이터셋과 문장 리소스 흐름
+
+<p align="center">
+  <img src="docs/assets/readme-07-data-resources-ko.svg" alt="수화 문장 데이터셋과 문장 리소스 흐름" width="100%" />
+</p>
+
+### 7. 자주 쓰는 실행 명령
+
+<p align="center">
+  <img src="docs/assets/readme-08-command-cheatsheet-ko.svg" alt="자주 쓰는 실행 명령 요약" width="100%" />
+</p>
+
+### 8. 제스처와 한국어 명령 처리 흐름
+
+<p align="center">
+  <img src="docs/assets/readme-09-command-dispatch-ko.svg" alt="제스처와 한국어 음성 명령이 dispatcher로 모이는 흐름" width="100%" />
+</p>
+
+## 빠른 실행
+
+### 1. Python 환경 준비
 
 ```bash
-cd /Users/suhwan/Downloads/signlanguageProject
+cd gesture-bridge
 python -m venv .venv
 source .venv/bin/activate
-pip install -e ".[vision,control,ml]"
+pip install -e ".[vision,control,ml,dev]"
 ```
 
-설치가 끝났으면 이후부터는 작업할 때마다 아래만 먼저 실행하면 된다.
+이미 가상환경을 만든 뒤에는 작업할 때마다 아래만 실행하면 됩니다.
 
 ```bash
-cd /Users/suhwan/Downloads/signlanguageProject
+cd gesture-bridge
 source .venv/bin/activate
 ```
 
-## 2. 빠른 실행
+현재 로컬 폴더명이 아직 `signlanguageProject`라면 `cd /Users/suhwan/Downloads/signlanguageProject`를 사용해도 됩니다.
 
-### 2-1. 화면 제어 바로 실행
+### 2. 프론트엔드 환경 준비
 
-드라이런:
+이 프로젝트의 웹앱은 Next.js 기반입니다.
 
 ```bash
-cd /Users/suhwan/Downloads/signlanguageProject
-source .venv/bin/activate
+pnpm install --frozen-lockfile
+pnpm dev
+```
+
+브라우저에서 다음 주소를 엽니다.
+
+```text
+http://127.0.0.1:3000
+```
+
+production 빌드 확인:
+
+```bash
+pnpm build
+pnpm start --hostname 127.0.0.1 --port 3001
+```
+
+### 3. 가장 먼저 확인할 명령
+
+실제 마우스나 키보드를 움직이지 않는 PC 제어 dry-run입니다.
+
+```bash
 PYTHONPATH=src python -m gesture_bridge pc-control
 ```
 
-실제 마우스/키보드 제어:
+실제 OS 입력을 내보내려면 명시적으로 `--live`를 붙입니다.
 
 ```bash
-cd /Users/suhwan/Downloads/signlanguageProject
-source .venv/bin/activate
 PYTHONPATH=src python -m gesture_bridge pc-control --live
 ```
 
-### 2-2. 수어 인식 바로 실행
-
-이미 학습이 끝난 상태라면 바로 추론:
+### 4. 인터랙티브 체험 바로 열기
 
 ```bash
-cd /Users/suhwan/Downloads/signlanguageProject
-source .venv/bin/activate
-PYTHONPATH=src python -m gesture_bridge sign-text --labels-config configs/korean_sign_labels.example.json
+pnpm dev
 ```
 
-아직 학습 전이라면 순서:
-
-```bash
-cd /Users/suhwan/Downloads/signlanguageProject
-source .venv/bin/activate
-
-PYTHONPATH=src python -m gesture_bridge collect-signs --labels-config configs/korean_sign_labels.example.json --label 안녕하세요 --sequences 30
-PYTHONPATH=src python -m gesture_bridge collect-signs --labels-config configs/korean_sign_labels.example.json --label 감사합니다 --sequences 30
-PYTHONPATH=src python -m gesture_bridge collect-signs --labels-config configs/korean_sign_labels.example.json --label 네 --sequences 30
-PYTHONPATH=src python -m gesture_bridge collect-signs --labels-config configs/korean_sign_labels.example.json --label 아니요 --sequences 30
-
-PYTHONPATH=src python -m gesture_bridge train-signs --labels-config configs/korean_sign_labels.example.json
-PYTHONPATH=src python -m gesture_bridge sign-text --labels-config configs/korean_sign_labels.example.json
+```text
+http://127.0.0.1:3000/interactive
 ```
 
-## 3. 이 프로젝트에서 제일 먼저 해볼 것
+카메라 권한이 없거나 테스트 환경이라면 `마우스 시뮬레이션` 버튼으로 포인터/클릭 제스처를 대신 사용할 수 있습니다.
 
-가장 먼저 아래 명령으로 `PC 제어 드라이런`을 실행한다.
+## 전체 작동 구조
 
-```bash
-PYTHONPATH=src python -m gesture_bridge pc-control
+```mermaid
+flowchart LR
+  Input[입력<br/>웹캠 + 마이크 + 마우스 시뮬레이션] --> Split{사용자가 선택한 모드}
+
+  Split --> PC[PC 제어 모드]
+  PC --> PCTrack[MediaPipe/OpenCV 손 랜드마크]
+  PCTrack --> PCGesture[규칙 기반 제스처 판정]
+  PCGesture --> PCStable[안정화 + cooldown]
+  PCStable --> OS[OS 입력 어댑터<br/>마우스 이동/클릭/스크롤]
+
+  Split --> Sign[수화 문장 모드]
+  Sign --> Holistic[양손 + 어깨/팔꿈치/손목 landmark]
+  Holistic --> Sequence[30프레임 sequence feature]
+  Sequence --> Classifier[KNN sign/gloss classifier]
+  Classifier --> Assembler[문장 조립기]
+  Assembler --> Memory[GKSL 문장 메모리<br/>exact/fuzzy/fallback]
+  Memory --> Korean[한국어 문장 출력]
+
+  Split --> Web[인터랙티브 웹 스테이지]
+  Web --> Hands[MediaPipe Hands<br/>브라우저 손 추적]
+  Web --> Voice[Web Speech API<br/>ko-KR 음성 인식]
+  Hands --> Action[모드별 action dispatch]
+  Voice --> Parser[한국어 명령 parser]
+  Parser --> Action
+  Action --> Experience[사진/그림/날씨/효과/게임/3D/음악]
 ```
 
-이 명령은 `실제 마우스/키보드를 움직이지 않고`, 화면에서 어떤 손동작이 어떤 동작으로 인식되는지만 보여준다.
+### 수화 문장 파이프라인
 
-현재 이 컴퓨터 기준 기본값:
+```mermaid
+sequenceDiagram
+  participant Camera as 웹캠
+  participant Feature as Landmark Feature
+  participant Model as Sign Classifier
+  participant Stable as Prediction Stabilizer
+  participant Sentence as Sentence Assembler
+  participant Memory as GKSL Memory
+  participant UI as Overlay
 
-- 카메라 인덱스: `1`
-- 카메라 백엔드: `default`
+  Camera->>Feature: 양손 + 팔 포즈 30프레임 누적
+  Feature->>Model: sequence feature 입력
+  Model->>Stable: label + confidence
+  Stable->>Sentence: 안정화된 gloss 토큰 emit
+  Sentence->>Memory: gloss token sequence 검색
+  Memory->>Sentence: exact/fuzzy/fallback 문장 후보
+  Sentence->>UI: gloss, 한국어 문장, source, score 표시
+```
 
-즉, 지금은 옵션 없이 위 명령만 쳐도 되게 맞춰둔 상태다.
+### 인터랙티브 웹 스테이지
 
-## 4. PC 제어 모드에서 손동작별 기능
+```mermaid
+flowchart TB
+  Start["/interactive"] --> Permission[카메라/마이크 권한 또는 마우스 시뮬레이션]
+  Permission --> Gesture[gesture-recognizer]
+  Permission --> Speech[korean-command-parser]
+  Gesture --> Combo[gesture-combo-manager]
+  Gesture --> Dispatch[action dispatch]
+  Speech --> Dispatch
+  Combo --> Dispatch
+  Dispatch --> Image[사진 모드]
+  Dispatch --> Drawing[그림 모드]
+  Dispatch --> Weather[날씨 모드]
+  Dispatch --> Effects[효과 모드]
+  Dispatch --> Games[게임 모드]
+  Dispatch --> ThreeD[3D 모드]
+  Dispatch --> Music[음악 모드]
+```
 
-현재 기본 제스처는 아래와 같다.
+## 모드별 상세 설명
 
-| 손동작 | 인식 이름 | 실행 동작 |
+### PC 제어 모드
+
+PC 제어 모드는 한 손의 정적인 제스처를 빠르게 판정해 실제 화면 조작으로 연결합니다.
+
+| 손동작 | 내부 이름 | 동작 |
 | --- | --- | --- |
-| 손바닥 전체 펴기 | `open_palm` | 아무 동작 안 함, 대기 상태 |
-| 검지만 펴기 | `point` | 마우스 커서 이동 |
-| 엄지와 검지를 붙이기 | `pinch` | 왼쪽 클릭 |
-| 브이 표시 | `peace` | 다음 슬라이드 |
+| 손바닥 펴기 | `open_palm` | 대기 |
+| 검지만 펴기 | `point` | 커서 이동 |
+| 엄지와 검지 붙이기 | `pinch` | 왼쪽 클릭 |
+| 브이 | `peace` | 다음 슬라이드 |
 | 엄지 올리기 | `thumbs_up` | 위로 스크롤 |
 | 엄지 내리기 | `thumbs_down` | 아래로 스크롤 |
 
-화면에서 볼 수 있는 텍스트 의미:
-
-- `Gesture`: 안정화까지 끝난 최종 제스처
-- `Raw`: 방금 프레임에서 원시적으로 감지된 제스처
-- `Action`: 실제 실행되거나 실행될 동작
-
-즉 `Raw`는 잠깐 흔들릴 수 있고, `Gesture`가 최종 결과라고 보면 된다.
-
-## 5. PC 제어 모드 실행 방법
-
-### 5-1. 안전 확인용 드라이런
+실행:
 
 ```bash
 PYTHONPATH=src python -m gesture_bridge pc-control
-```
-
-이 상태에서는 실제 마우스가 움직이지 않는다.
-
-확인할 것:
-
-- 카메라 창이 뜨는지
-- 손 위에 랜드마크 선이 그려지는지
-- `Gesture`, `Action` 텍스트가 바뀌는지
-
-종료는 `q` 키다.
-
-### 5-2. 실제 PC 제어 실행
-
-```bash
 PYTHONPATH=src python -m gesture_bridge pc-control --live
 ```
 
-이 모드에서는 실제 마우스와 키보드 입력이 나간다.
-
-주의:
-
-- macOS에서는 접근성 권한이 필요할 수 있다
-- 클릭과 스크롤이 실제로 실행되므로 처음에는 천천히 테스트하는 게 좋다
-
-### 5-3. 카메라가 이상할 때
-
-카메라가 안 잡히거나 다른 카메라가 켜지면 아래 명령으로 어떤 카메라가 읽히는지 확인한다.
+카메라 확인:
 
 ```bash
 PYTHONPATH=src python -m gesture_bridge probe-camera
 ```
 
-결과에서 `readable=True`인 조합을 쓰면 된다.
-
-예시:
+카메라가 여러 개면 읽히는 조합을 직접 지정합니다.
 
 ```bash
 PYTHONPATH=src python -m gesture_bridge pc-control --camera-index 1 --camera-backend default
 ```
 
-## 6. 수화 텍스트 모드 사용 순서
+### 수화 문장 모드
 
-수화 모드는 아래 순서로 사용한다.
+수화 문장 모드는 두 단계로 나뉩니다.
 
-1. 라벨 하나씩 데이터 수집
-2. 수집한 데이터로 모델 학습
-3. 학습된 모델로 실시간 추론
+1. 카메라 입력에서 landmark sequence를 기반으로 sign/gloss label을 인식
+2. 인식된 gloss token sequence를 한국어 문장으로 조립
 
-현재 수화 모드가 보는 정보:
-
-- 왼손 랜드마크
-- 오른손 랜드마크
-- 어깨, 팔꿈치, 손목 위치
-
-즉 단순히 `손 하나`만 보는 구조가 아니라 `두 손 + 팔`을 같이 본다.
-
-### 6-1. 수집 가능한 기본 라벨
-
-기본 라벨 목록은 `configs/sign_labels.example.json`에 들어 있다.
-
-현재 기본 라벨:
-
-- `hello`
-- `thanks`
-- `yes`
-- `no`
-- `help`
-- `stop`
-- `ok`
-- `love`
-- `sorry`
-- `bathroom`
-
-한국어로 직접 학습하고 싶으면 `configs/korean_sign_labels.example.json`도 같이 넣어뒀다.
-
-현재 한국어 예시 라벨:
-
-- `안녕하세요`
-- `감사합니다`
-- `네`
-- `아니요`
-
-중요:
-
-- `안녕하세요` 한 단어만 모아서 학습하면 모델이 거의 무조건 그 단어로 치우칠 수 있다
-- 그래서 최소 `2개 이상`, 가능하면 `3~4개` 라벨을 같이 수집하는 게 맞다
-
-### 6-2. 수화 데이터 수집
-
-예를 들어 `hello`를 20개 녹화하려면:
+기본 실행:
 
 ```bash
-PYTHONPATH=src python -m gesture_bridge collect-signs --label hello --sequences 20
+PYTHONPATH=src python -m gesture_bridge sign-text \
+  --labels-config configs/korean_sentence_gloss_labels.example.json
 ```
 
-설명:
-
-- `--label hello`: 어떤 단어를 녹화할지
-- `--sequences 20`: 같은 단어를 몇 번 기록할지
-
-`안녕하세요`를 학습하고 싶으면 이런 식으로 하면 된다.
+기존 단어 출력 백업:
 
 ```bash
-PYTHONPATH=src python -m gesture_bridge collect-signs --labels-config configs/korean_sign_labels.example.json --label 안녕하세요 --sequences 30
-PYTHONPATH=src python -m gesture_bridge collect-signs --labels-config configs/korean_sign_labels.example.json --label 감사합니다 --sequences 30
-PYTHONPATH=src python -m gesture_bridge collect-signs --labels-config configs/korean_sign_labels.example.json --label 네 --sequences 30
-PYTHONPATH=src python -m gesture_bridge collect-signs --labels-config configs/korean_sign_labels.example.json --label 아니요 --sequences 30
+PYTHONPATH=src python -m gesture_bridge sign-text \
+  --labels-config configs/korean_sign_labels.example.json \
+  --output-mode words
 ```
 
-추천:
-
-- 라벨마다 최소 `20~30개` 이상 수집
-- 손 위치, 속도, 각도를 조금씩 바꿔가며 수집
-- 한 라벨만 몰아서 하지 말고 여러 라벨을 비슷한 양으로 모으는 게 좋다
-- 두 손을 쓰는 수어는 양손이 프레임 안에 같이 들어오게 수집하는 게 중요하다
-- 팔 위치가 보이도록 상반신이 충분히 나오게 카메라를 두는 게 좋다
-
-### 6-3. 수화 모델 학습
-
-수집이 끝나면 학습:
+문장과 단어를 같이 보고 싶을 때:
 
 ```bash
-PYTHONPATH=src python -m gesture_bridge train-signs
+PYTHONPATH=src python -m gesture_bridge sign-text \
+  --labels-config configs/korean_sentence_gloss_labels.example.json \
+  --output-mode both
 ```
 
-한국어 라벨 설정으로 학습하려면:
+라벨 수집 예시:
 
 ```bash
-PYTHONPATH=src python -m gesture_bridge train-signs --labels-config configs/korean_sign_labels.example.json
+PYTHONPATH=src python -m gesture_bridge collect-signs \
+  --labels-config configs/korean_sentence_gloss_labels.example.json \
+  --label 집 \
+  --sequences 30
 ```
 
-학습이 끝나면 모델이 저장된다.
-
-- 기본 저장 위치: `models/sign_knn.joblib`
-
-### 6-4. 실시간 수화 텍스트 추론
+학습:
 
 ```bash
-PYTHONPATH=src python -m gesture_bridge sign-text
+PYTHONPATH=src python -m gesture_bridge train-signs \
+  --labels-config configs/korean_sentence_gloss_labels.example.json
 ```
 
-한국어 라벨 설정으로 추론하려면:
+카메라 없이 gloss-to-Korean 계층만 테스트:
 
 ```bash
-PYTHONPATH=src python -m gesture_bridge sign-text --labels-config configs/korean_sign_labels.example.json
+PYTHONPATH=src python -m gesture_bridge translate-gloss 집 불
 ```
 
-화면에서 볼 수 있는 정보:
+예상 출력:
 
-- 현재 예측 중인 라벨
-- 예측 신뢰도
-- 버퍼 상태
-- 지금까지 출력된 단어 목록
+```text
+Gloss:
+집 불
+Korean sentence:
+집에 불이 났어요.
+Source: exact:GKSL3k_original.csv, score=1.00, matched_gloss=집 불
+```
 
-조작:
+### 인터랙티브 체험 모드
 
-- `c`: 출력된 텍스트 지우기
-- `q`: 종료
+인터랙티브 모드는 브라우저에서 실행됩니다.
 
-## 7. 자주 쓰는 명령어 모음
+```bash
+pnpm dev
+```
 
-### 프로젝트 구조 설명 보기
+```text
+http://127.0.0.1:3000/interactive
+```
+
+대표 한국어 음성 명령:
+
+| 명령 예시 | 동작 |
+| --- | --- |
+| `날씨 알려줘` | 날씨 모드로 이동 |
+| `서울 날씨 알려줘` | 서울 날씨 패널 표시 |
+| `사진 보여줘` | 사진 모드 |
+| `다음 사진` | 다음 사진 선택 |
+| `이전 사진` | 이전 사진 선택 |
+| `확대해줘` | 선택 사진 확대 |
+| `축소해줘` | 선택 사진 축소 |
+| `그림 그리기 시작` | 그림 모드 |
+| `지우개` | 지우개 도구 |
+| `전체 지워줘` | 드로잉 전체 삭제 |
+| `저장해줘` | 그림 저장 |
+| `효과 실행` | 현재 효과 실행 |
+| `게임 시작` | 게임 모드 |
+| `3D 보여줘` | 3D 모드 |
+| `음악 재생` | 음악 재생 |
+| `음악 멈춰` | 음악 정지 |
+| `볼륨 올려줘` | 볼륨 증가 |
+| `초기화해줘` | 전체 상태 초기화 |
+
+브라우저 음성 인식은 Web Speech API를 사용합니다. Chrome 계열 브라우저에서 가장 안정적으로 동작합니다.
+
+## 수화 문장 인식 데이터셋과 한계
+
+현재 프로젝트에 반영된 공개 리소스:
+
+| 리소스 | 용도 | 저장 위치 | 비고 |
+| --- | --- | --- | --- |
+| GKSL-dataset | gloss sentence -> Korean sentence 메모리 | `data/external/gksl` | 공개 GitHub CSV |
+| KSL-LEX | 한국수어 어휘 후보 확장 | `data/external/ksl_lex/KSL-LEX.csv` | Hugging Face dataset viewer |
+| KSL-Guide README | sentence dataset reference | `data/external/ksl_guide/README.md` | 실제 원본 데이터는 AI Hub 승인 필요 |
+| Local imported corpus | 승인 후 직접 받은 AI Hub/NIKL 자료 import | `data/external/local_sentence_corpus` | 사용자가 직접 다운로드 후 import |
+
+리소스 갱신:
+
+```bash
+PYTHONPATH=src python -m gesture_bridge prepare-sentence-resources --max-labels 160
+```
+
+개별 실행:
+
+```bash
+PYTHONPATH=src python -m gesture_bridge download-sentence-data
+PYTHONPATH=src python -m gesture_bridge download-ksl-lex
+PYTHONPATH=src python -m gesture_bridge build-sentence-model
+PYTHONPATH=src python -m gesture_bridge build-sentence-labels --max-labels 160
+```
+
+AI Hub/NIKL에서 승인 후 받은 말뭉치를 import:
+
+```bash
+PYTHONPATH=src python -m gesture_bridge import-sentence-corpus /path/to/extracted/ksl-corpus
+```
+
+import한 데이터까지 문장 메모리에 포함:
+
+```bash
+PYTHONPATH=src python -m gesture_bridge build-sentence-model \
+  --csv data/external/gksl/GKSL3k_original.csv \
+        data/external/gksl/GKSL13k_augmented.csv \
+        data/external/local_sentence_corpus/imported_sentence_pairs.csv
+```
+
+주의:
+
+- GKSL 공개 데이터 라이선스는 `CC BY-NC-SA 4.0`입니다.
+- 상업적 사용 전에는 반드시 데이터 라이선스와 원본 제공처 조건을 확인해야 합니다.
+- `configs/korean_sentence_gloss_labels.expanded.json`는 후보 라벨 목록입니다. 이 파일이 있다고 해서 해당 라벨을 카메라가 바로 인식하는 것은 아닙니다.
+- 실제 인식을 위해서는 각 라벨별 landmark sequence를 수집하고 `train-signs`로 모델을 다시 학습해야 합니다.
+
+## 폴더 구조
+
+```text
+gesture-bridge/
+├── app/                         # Next.js App Router 페이지
+│   ├── page.tsx                 # 기능 선택 랜딩
+│   └── interactive/page.tsx     # 인터랙티브 체험 진입점
+├── components/
+│   ├── interactive/             # 인터랙티브 스테이지 React UI
+│   └── ui/                      # shadcn 기반 공용 UI 컴포넌트
+├── lib/interactive/
+│   ├── features/                # 효과, 미니게임 정의
+│   ├── gesture/                 # 브라우저 제스처 인식과 콤보
+│   ├── services/                # 날씨 등 외부 서비스 계층
+│   ├── voice/                   # 한국어 음성 명령 parser
+│   └── types.ts                 # 인터랙티브 모드/명령 타입
+├── public/
+│   ├── models/hand_landmarker.task
+│   ├── mediapipe/wasm/          # 브라우저 MediaPipe runtime
+│   └── *.png                    # 랜딩/README용 이미지
+├── src/gesture_bridge/
+│   ├── control/                 # PC 제어 gesture/action mapping
+│   ├── core/                    # 카메라, landmark, feature, overlay, download 유틸
+│   ├── modes/                   # pc_control, sign_text 실행 모드
+│   └── sign/                    # sign classifier, dataset, sentence resources
+├── configs/                     # gesture action, sign label 설정
+├── data/external/               # 공개/사용자 import 데이터
+├── models/                      # 학습 모델과 문장 메모리
+├── docs/                        # 연구 메모와 README 이미지
+└── tests/                       # Python 테스트
+```
+
+## 주요 명령어
+
+### 프로젝트 구조 확인
 
 ```bash
 PYTHONPATH=src python -m gesture_bridge overview
@@ -289,126 +484,136 @@ PYTHONPATH=src python -m gesture_bridge roadmap
 PYTHONPATH=src python -m gesture_bridge tree
 ```
 
+### 카메라
+
+```bash
+PYTHONPATH=src python -m gesture_bridge probe-camera
+```
+
 ### PC 제어
 
 ```bash
 PYTHONPATH=src python -m gesture_bridge pc-control
 PYTHONPATH=src python -m gesture_bridge pc-control --live
-PYTHONPATH=src python -m gesture_bridge probe-camera
 ```
 
-### 수화 데이터 수집과 추론
+### 수화 데이터 수집/학습/추론
 
 ```bash
-PYTHONPATH=src python -m gesture_bridge collect-signs --label hello --sequences 20
-PYTHONPATH=src python -m gesture_bridge train-signs
-PYTHONPATH=src python -m gesture_bridge sign-text
-```
-
-### `안녕하세요`를 포함한 한국어 수어 학습
-
-```bash
-PYTHONPATH=src python -m gesture_bridge collect-signs --labels-config configs/korean_sign_labels.example.json --label 안녕하세요 --sequences 30
-PYTHONPATH=src python -m gesture_bridge collect-signs --labels-config configs/korean_sign_labels.example.json --label 감사합니다 --sequences 30
-PYTHONPATH=src python -m gesture_bridge collect-signs --labels-config configs/korean_sign_labels.example.json --label 네 --sequences 30
-PYTHONPATH=src python -m gesture_bridge collect-signs --labels-config configs/korean_sign_labels.example.json --label 아니요 --sequences 30
+PYTHONPATH=src python -m gesture_bridge collect-signs --label 안녕하세요 --labels-config configs/korean_sign_labels.example.json
 PYTHONPATH=src python -m gesture_bridge train-signs --labels-config configs/korean_sign_labels.example.json
 PYTHONPATH=src python -m gesture_bridge sign-text --labels-config configs/korean_sign_labels.example.json
 ```
 
-## 8. 파일별 역할
-
-자주 보게 될 파일은 아래 정도다.
-
-- `README.md`: 프로젝트 사용법
-- `pyproject.toml`: 패키지와 의존성 설정
-- `configs/gesture_actions.example.json`: 손동작과 PC 동작 매핑
-- `configs/sign_labels.example.json`: 수화 라벨 목록과 시퀀스 길이 설정
-- `configs/korean_sign_labels.example.json`: 한국어 수어 라벨 예시 설정
-- `src/gesture_bridge/cli.py`: 전체 실행 명령 진입점
-- `src/gesture_bridge/core/camera.py`: 웹캠 열기, 카메라 탐색
-- `src/gesture_bridge/core/landmarks.py`: MediaPipe 손 랜드마크 추출
-- `src/gesture_bridge/core/holistic.py`: 수화용 양손 + 포즈 추적
-- `src/gesture_bridge/control/gestures.py`: PC 제어용 손동작 판정
-- `src/gesture_bridge/modes/pc_control.py`: PC 제어 실시간 실행
-- `src/gesture_bridge/sign/dataset.py`: 수화 데이터 저장
-- `src/gesture_bridge/sign/classifier.py`: 수화 모델 학습과 로드
-- `src/gesture_bridge/modes/sign_text.py`: 수화 텍스트 실시간 실행
-
-## 9. 문제가 생기면 먼저 볼 것
-
-### 카메라가 안 뜰 때
-
-먼저 진단:
+### 문장 리소스
 
 ```bash
-PYTHONPATH=src python -m gesture_bridge probe-camera
+PYTHONPATH=src python -m gesture_bridge prepare-sentence-resources --max-labels 160
+PYTHONPATH=src python -m gesture_bridge translate-gloss 집 불
 ```
 
-그다음:
-
-- 다른 카메라 앱이 켜져 있지 않은지 확인
-- `readable=True`인 인덱스를 사용
-- macOS 카메라 권한에서 `Codex`가 허용되어 있는지 확인
-
-### 창은 뜨는데 손 인식이 잘 안 될 때
-
-- 손을 카메라에 너무 가까이 대지 않기
-- 손 전체가 프레임 안에 들어오게 하기
-- 배경이 너무 복잡하지 않게 하기
-- 조명이 너무 어둡지 않게 하기
-- 수화 모드는 양손과 팔을 같이 보므로 상체가 어느 정도 프레임 안에 들어오게 하기
-
-### 수화 인식이 잘 안 될 때
-
-- 같은 라벨 데이터를 더 많이 모으기
-- 라벨별 데이터 수를 비슷하게 맞추기
-- 손 모양만이 아니라 시작 위치와 움직임도 일정하게 녹화하기
-- `안녕하세요` 하나만 학습하지 말고 최소 2개 이상 라벨을 같이 학습하기
-
-## 10. 현재 한계
-
-- 수화 모드는 `제한된 단어 인식기`다
-- 사람마다 손 모양 차이가 커서 데이터가 적으면 인식률이 낮아질 수 있다
-- PC 제어 모드는 카메라 위치와 손 위치에 따라 체감이 달라질 수 있다
-
-## 11. 한 줄 사용 순서 요약
-
-### PC 제어만 빨리 써보고 싶을 때
+### 프론트엔드
 
 ```bash
-cd /Users/suhwan/Downloads/signlanguageProject
-source .venv/bin/activate
-PYTHONPATH=src python -m gesture_bridge pc-control
+pnpm dev
+pnpm lint
+pnpm exec tsc --noEmit
+pnpm build
+pnpm start --hostname 127.0.0.1 --port 3001
 ```
 
-### 실제 마우스 제어까지 하고 싶을 때
+## 개발과 검증
+
+최종 검증 시 사용한 명령:
 
 ```bash
-cd /Users/suhwan/Downloads/signlanguageProject
-source .venv/bin/activate
-PYTHONPATH=src python -m gesture_bridge pc-control --live
+pnpm install --frozen-lockfile
+pnpm peers check
+pnpm lint
+pnpm exec tsc --noEmit
+pnpm build
+
+PYTHONPATH=src .venv/bin/pytest -q
+PYTHONPATH=src .venv/bin/ruff check src tests
+PYTHONPATH=src .venv/bin/python -m compileall -q src tests
+PYTHONPATH=src .venv/bin/python -m gesture_bridge translate-gloss 집 불
+PYTHONPATH=src .venv/bin/python -m gesture_bridge build-sentence-labels --max-labels 160 --output-path /tmp/korean_sentence_gloss_labels.check.json
 ```
 
-### 수화 텍스트까지 해보고 싶을 때
+브라우저 QA는 Playwright로 다음을 확인했습니다.
+
+- `/` 랜딩 렌더링
+- `/interactive` 데스크톱 렌더링
+- `/interactive` 모바일 렌더링
+- 그림 모드 마우스 시뮬레이션 드로잉
+- fake media 기반 카메라 시작 흐름
+- 콘솔 에러, 페이지 에러, 실패 request 여부
+
+## 구현 메모
+
+### 프론트엔드
+
+- Next.js 15 App Router 기반
+- React 19 사용
+- MediaPipe Tasks Vision으로 브라우저 손 추적
+- Web Speech API `ko-KR` 기반 한국어 음성 명령 인식
+- Canvas API로 드로잉, 효과, 미니게임 렌더링
+- Three.js 의존성은 3D 기능 확장 기반으로 유지
+- `/interactive`는 카메라 권한이 없어도 마우스 시뮬레이션으로 대부분 기능을 검증 가능
+
+### Python
+
+- OpenCV + MediaPipe 기반 카메라 처리
+- PC 제어는 dry-run 기본값으로 안전하게 설계
+- 실제 OS 제어는 `--live`를 명시해야 실행
+- 수화 문장 계층은 데이터 다운로드, 말뭉치 import, 문장 메모리 build, 라벨 config build를 CLI로 분리
+- 다운로드는 임시 파일에 받은 뒤 replace하는 원자적 저장 방식 사용
+
+## GitHub 저장소 이름 변경
+
+현재 remote는 기존 이름을 가리킵니다.
+
+```text
+https://github.com/luckyandy7/signlanguageProject.git
+```
+
+GitHub 저장소 이름을 `gesture-bridge`로 바꾼 뒤 remote를 아래처럼 변경합니다.
 
 ```bash
-cd /Users/suhwan/Downloads/signlanguageProject
-source .venv/bin/activate
-PYTHONPATH=src python -m gesture_bridge collect-signs --label hello --sequences 20
-PYTHONPATH=src python -m gesture_bridge train-signs
-PYTHONPATH=src python -m gesture_bridge sign-text
+git remote set-url origin https://github.com/luckyandy7/gesture-bridge.git
+git remote -v
 ```
 
-### `안녕하세요`를 실제로 학습시키고 싶을 때
+GitHub CLI로 저장소 이름까지 같이 바꿀 수 있는 환경이면:
 
 ```bash
-cd /Users/suhwan/Downloads/signlanguageProject
-source .venv/bin/activate
-PYTHONPATH=src python -m gesture_bridge collect-signs --labels-config configs/korean_sign_labels.example.json --label 안녕하세요 --sequences 30
-PYTHONPATH=src python -m gesture_bridge collect-signs --labels-config configs/korean_sign_labels.example.json --label 감사합니다 --sequences 30
-PYTHONPATH=src python -m gesture_bridge collect-signs --labels-config configs/korean_sign_labels.example.json --label 네 --sequences 30
-PYTHONPATH=src python -m gesture_bridge collect-signs --labels-config configs/korean_sign_labels.example.json --label 아니요 --sequences 30
-PYTHONPATH=src python -m gesture_bridge train-signs --labels-config configs/korean_sign_labels.example.json
-PYTHONPATH=src python -m gesture_bridge sign-text --labels-config configs/korean_sign_labels.example.json
+gh repo rename gesture-bridge --repo luckyandy7/signlanguageProject
+git remote set-url origin https://github.com/luckyandy7/gesture-bridge.git
 ```
+
+그 다음 push:
+
+```bash
+git push -u origin main
+```
+
+브랜치 이름이 `master`라면:
+
+```bash
+git push -u origin master
+```
+
+## 권장 작업 순서
+
+1. README와 코드 변경 확인
+2. GitHub repo 이름을 `gesture-bridge`로 변경
+3. `git remote set-url origin https://github.com/luckyandy7/gesture-bridge.git`
+4. 검증 명령 재실행
+5. commit
+6. push
+
+## 라이선스와 데이터 주의사항
+
+코드 라이선스는 아직 저장소에 명시되어 있지 않습니다. 공개 배포 전에는 `LICENSE` 파일을 추가하는 것이 좋습니다.
+
+데이터는 코드와 별개로 원본 제공처의 라이선스를 따릅니다. 특히 GKSL 공개 데이터는 `CC BY-NC-SA 4.0` 조건이므로 상업적 사용이나 재배포 계획이 있다면 반드시 별도 검토가 필요합니다.

@@ -57,9 +57,6 @@ def draw_hand(frame, hand: HandObservation | None, color: tuple[int, int, int] =
     if hand is None:
         return
 
-    cv2 = _require_cv2()
-    frame_height, frame_width = frame.shape[:2]
-
     _draw_landmark_tuple(frame, hand.landmarks, color=color, connections=HAND_CONNECTIONS)
 
 

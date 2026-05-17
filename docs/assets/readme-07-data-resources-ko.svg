@@ -1,0 +1,55 @@
+<svg width="1200" height="680" viewBox="0 0 1200 680" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <style>
+    text { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Apple SD Gothic Neo", "Noto Sans KR", sans-serif; }
+    .title { font-size: 38px; font-weight: 850; fill: #102027; }
+    .sub { font-size: 17px; font-weight: 500; fill: #5d6c73; }
+    .h { font-size: 20px; font-weight: 850; fill: #15262D; }
+    .t { font-size: 14px; font-weight: 650; fill: #5B6B72; }
+    .warn { font-size: 14px; font-weight: 800; fill: #9A5D00; }
+  </style>
+  <rect width="1200" height="680" rx="34" fill="#F8FAFA"/>
+  <rect x="54" y="50" width="1092" height="580" rx="30" fill="white" stroke="#D7E2E5"/>
+  <text x="92" y="112" class="title">데이터셋과 문장 리소스 흐름</text>
+  <text x="94" y="147" class="sub">공개 데이터는 자동 준비하고, 승인형 데이터는 사용자가 받은 뒤 import합니다.</text>
+
+  <g transform="translate(90 218)">
+    <rect width="220" height="100" rx="18" fill="#F2F8F8" stroke="#CFE1E2"/>
+    <text x="24" y="42" class="h">GKSL-dataset</text>
+    <text x="24" y="70" class="t">gloss ↔ 한국어 문장 CSV</text>
+  </g>
+  <g transform="translate(90 348)">
+    <rect width="220" height="100" rx="18" fill="#F6F8FF" stroke="#D5DDF2"/>
+    <text x="24" y="42" class="h">KSL-LEX</text>
+    <text x="24" y="70" class="t">한국수어 어휘 후보</text>
+  </g>
+  <g transform="translate(90 478)">
+    <rect width="220" height="100" rx="18" fill="#FFF8EC" stroke="#E8DCC6"/>
+    <text x="24" y="42" class="h">AI Hub · NIKL</text>
+    <text x="24" y="70" class="warn">승인 후 수동 import</text>
+  </g>
+
+  <path d="M332 268H435" stroke="#7CAEB2" stroke-width="4"/><path d="M435 268l-12-8v16l12-8z" fill="#7CAEB2"/>
+  <path d="M332 398H435" stroke="#7CAEB2" stroke-width="4"/><path d="M435 398l-12-8v16l12-8z" fill="#7CAEB2"/>
+  <path d="M332 528H435" stroke="#C39A51" stroke-width="4"/><path d="M435 528l-12-8v16l12-8z" fill="#C39A51"/>
+
+  <g transform="translate(462 300)">
+    <rect width="276" height="190" rx="24" fill="#F7FAFA" stroke="#D7E2E5"/>
+    <text x="32" y="56" class="h">리소스 빌더</text>
+    <text x="32" y="92" class="t">download-sentence-data</text>
+    <text x="32" y="120" class="t">download-ksl-lex</text>
+    <text x="32" y="148" class="t">import-sentence-corpus</text>
+  </g>
+
+  <path d="M760 395H850" stroke="#7CAEB2" stroke-width="4"/><path d="M850 395l-12-8v16l12-8z" fill="#7CAEB2"/>
+
+  <g transform="translate(878 238)">
+    <rect width="230" height="110" rx="20" fill="#F2FBF5" stroke="#D3E8D8"/>
+    <text x="24" y="46" class="h">문장 메모리</text>
+    <text x="24" y="76" class="t">models/sign_sentence_memory.json</text>
+  </g>
+  <g transform="translate(878 392)">
+    <rect width="230" height="110" rx="20" fill="#F2FBF5" stroke="#D3E8D8"/>
+    <text x="24" y="46" class="h">확장 라벨 설정</text>
+    <text x="24" y="76" class="t">configs/*.expanded.json</text>
+  </g>
+</svg>

@@ -1,0 +1,60 @@
+<svg width="1200" height="680" viewBox="0 0 1200 680" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <style>
+    text { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Apple SD Gothic Neo", "Noto Sans KR", sans-serif; }
+    .title { font-size: 38px; font-weight: 850; fill: #102027; }
+    .sub { font-size: 17px; font-weight: 500; fill: #5d6c73; }
+    .h { font-size: 21px; font-weight: 850; fill: #15262D; }
+    .t { font-size: 15px; font-weight: 700; fill: #5B6B72; }
+    .chip { font-size: 14px; font-weight: 850; fill: #0f766e; }
+  </style>
+  <rect width="1200" height="680" rx="34" fill="#F8FAFA"/>
+  <rect x="54" y="50" width="1092" height="580" rx="30" fill="white" stroke="#D7E2E5"/>
+  <text x="92" y="112" class="title">제스처와 한국어 명령 처리 흐름</text>
+  <text x="94" y="147" class="sub">손동작과 음성 명령은 서로 다른 입력이지만 같은 dispatcher를 통해 기능으로 연결됩니다.</text>
+
+  <g transform="translate(96 235)">
+    <rect width="260" height="260" rx="24" fill="#F2F8F8" stroke="#CFE1E2"/>
+    <text x="30" y="46" class="chip">손동작 입력</text>
+    <text x="30" y="88" class="h">Gesture</text>
+    <text x="30" y="132" class="t">핀치 · 검지 · 손바닥</text>
+    <text x="30" y="164" class="t">양손 벌리기 · 스와이프</text>
+    <text x="30" y="210" class="t">위치, 거리, 방향 계산</text>
+  </g>
+
+  <g transform="translate(96 515)">
+    <rect width="260" height="44" rx="14" fill="#EAF8F5" stroke="#BFE3DB"/>
+    <text x="26" y="28" class="t">gesture-recognizer</text>
+  </g>
+
+  <g transform="translate(844 235)">
+    <rect width="260" height="260" rx="24" fill="#F6F8FF" stroke="#D5DDF2"/>
+    <text x="30" y="46" class="chip">음성 입력</text>
+    <text x="30" y="88" class="h">Korean Voice</text>
+    <text x="30" y="132" class="t">“사진 보여줘”</text>
+    <text x="30" y="164" class="t">“그림 그리기 시작”</text>
+    <text x="30" y="196" class="t">“날씨 알려줘”</text>
+  </g>
+
+  <g transform="translate(844 515)">
+    <rect width="260" height="44" rx="14" fill="#EAF0FF" stroke="#C7D4F0"/>
+    <text x="26" y="28" class="t">korean-command-parser</text>
+  </g>
+
+  <path d="M380 365H492" stroke="#7CAEB2" stroke-width="4"/><path d="M492 365l-12-8v16l12-8z" fill="#7CAEB2"/>
+  <path d="M820 365H708" stroke="#7F98C7" stroke-width="4"/><path d="M708 365l12-8v16l-12-8z" fill="#7F98C7"/>
+
+  <g transform="translate(510 270)">
+    <rect width="180" height="190" rx="24" fill="#F7FAFA" stroke="#D7E2E5"/>
+    <text x="32" y="54" class="h">Action</text>
+    <text x="32" y="86" class="h">Dispatcher</text>
+    <text x="32" y="126" class="t">모드 변경</text>
+    <text x="32" y="154" class="t">기능 실행</text>
+  </g>
+
+  <g transform="translate(422 560)">
+    <rect width="86" height="42" rx="14" fill="white" stroke="#D7E2E5"/><text x="28" y="27" class="t">사진</text>
+    <rect x="98" width="86" height="42" rx="14" fill="white" stroke="#D7E2E5"/><text x="28" y="27" class="t">그림</text>
+    <rect x="196" width="86" height="42" rx="14" fill="white" stroke="#D7E2E5"/><text x="28" y="27" class="t">날씨</text>
+    <rect x="294" width="86" height="42" rx="14" fill="white" stroke="#D7E2E5"/><text x="28" y="27" class="t">효과</text>
+  </g>
+</svg>

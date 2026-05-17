@@ -1,0 +1,47 @@
+<svg width="1200" height="680" viewBox="0 0 1200 680" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <style>
+    text { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Apple SD Gothic Neo", "Noto Sans KR", sans-serif; }
+    .title { font-size: 38px; font-weight: 850; fill: #102027; }
+    .sub { font-size: 17px; font-weight: 500; fill: #5d6c73; }
+    .lane { font-size: 24px; font-weight: 850; fill: #102027; }
+    .box { font-size: 15px; font-weight: 750; fill: #26363D; }
+    .note { font-size: 13px; font-weight: 650; fill: #65747B; }
+  </style>
+  <rect width="1200" height="680" rx="34" fill="#F8FAFA"/>
+  <rect x="54" y="50" width="1092" height="580" rx="30" fill="white" stroke="#D7E2E5"/>
+  <text x="92" y="112" class="title">Python 런타임 흐름</text>
+  <text x="94" y="147" class="sub">카메라 입력은 같지만 PC 제어와 수화 문장 모드는 서로 다른 파이프라인으로 처리됩니다.</text>
+
+  <g transform="translate(92 215)">
+    <rect width="1016" height="145" rx="22" fill="#F2F8F8" stroke="#CFE1E2"/>
+    <text x="28" y="48" class="lane">PC 제어 모드</text>
+    <g transform="translate(210 34)">
+      <rect width="130" height="74" rx="16" fill="white" stroke="#D3E2E4"/><text x="25" y="45" class="box">웹캠</text>
+      <path d="M148 37h48" stroke="#7CAEB2" stroke-width="4"/><path d="M196 37l-12-8v16l12-8z" fill="#7CAEB2"/>
+      <rect x="215" width="130" height="74" rx="16" fill="white" stroke="#D3E2E4"/><text x="28" y="33" class="box">손</text><text x="28" y="55" class="box">랜드마크</text>
+      <path d="M363 37h48" stroke="#7CAEB2" stroke-width="4"/><path d="M411 37l-12-8v16l12-8z" fill="#7CAEB2"/>
+      <rect x="430" width="130" height="74" rx="16" fill="white" stroke="#D3E2E4"/><text x="24" y="33" class="box">제스처</text><text x="24" y="55" class="box">판정</text>
+      <path d="M578 37h48" stroke="#7CAEB2" stroke-width="4"/><path d="M626 37l-12-8v16l12-8z" fill="#7CAEB2"/>
+      <rect x="645" width="130" height="74" rx="16" fill="white" stroke="#D3E2E4"/><text x="28" y="33" class="box">안정화</text><text x="28" y="55" class="box">쿨다운</text>
+      <path d="M793 37h48" stroke="#7CAEB2" stroke-width="4"/><path d="M841 37l-12-8v16l12-8z" fill="#7CAEB2"/>
+      <rect x="860" width="130" height="74" rx="16" fill="#E6F6F2" stroke="#BEE1DA"/><text x="25" y="33" class="box">OS 제어</text><text x="25" y="55" class="box">실행</text>
+    </g>
+  </g>
+
+  <g transform="translate(92 405)">
+    <rect width="1016" height="145" rx="22" fill="#F6F8FF" stroke="#D5DDF2"/>
+    <text x="28" y="48" class="lane">수화 문장 모드</text>
+    <g transform="translate(210 34)">
+      <rect width="130" height="74" rx="16" fill="white" stroke="#D7DEEF"/><text x="25" y="45" class="box">웹캠</text>
+      <path d="M148 37h48" stroke="#7F98C7" stroke-width="4"/><path d="M196 37l-12-8v16l12-8z" fill="#7F98C7"/>
+      <rect x="215" width="130" height="74" rx="16" fill="white" stroke="#D7DEEF"/><text x="26" y="33" class="box">양손 +</text><text x="26" y="55" class="box">팔 포즈</text>
+      <path d="M363 37h48" stroke="#7F98C7" stroke-width="4"/><path d="M411 37l-12-8v16l12-8z" fill="#7F98C7"/>
+      <rect x="430" width="130" height="74" rx="16" fill="white" stroke="#D7DEEF"/><text x="18" y="33" class="box">30프레임</text><text x="18" y="55" class="box">시퀀스</text>
+      <path d="M578 37h48" stroke="#7F98C7" stroke-width="4"/><path d="M626 37l-12-8v16l12-8z" fill="#7F98C7"/>
+      <rect x="645" width="130" height="74" rx="16" fill="white" stroke="#D7DEEF"/><text x="25" y="33" class="box">gloss</text><text x="25" y="55" class="box">분류</text>
+      <path d="M793 37h48" stroke="#7F98C7" stroke-width="4"/><path d="M841 37l-12-8v16l12-8z" fill="#7F98C7"/>
+      <rect x="860" width="130" height="74" rx="16" fill="#EAF0FF" stroke="#C7D4F0"/><text x="17" y="33" class="box">한국어</text><text x="17" y="55" class="box">문장 출력</text>
+    </g>
+  </g>
+  <text x="94" y="592" class="note">기본 PC 제어는 dry-run입니다. 실제 OS 입력은 --live 옵션을 붙였을 때만 실행됩니다.</text>
+</svg>

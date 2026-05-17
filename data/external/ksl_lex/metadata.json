@@ -1,0 +1,14 @@
+{
+  "dataset": "AAILab/KSL-LEX",
+  "config": "default",
+  "split": "train",
+  "source_url": "https://huggingface.co/datasets/AAILab/KSL-LEX",
+  "rows": 6463,
+  "fields": [
+    "Headword",
+    "POS",
+    "Same_Sign_Words",
+    "Additional_Info",
+    "Homonym_Info"
+  ]
+}

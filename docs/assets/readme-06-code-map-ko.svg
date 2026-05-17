@@ -1,0 +1,54 @@
+<svg width="1200" height="680" viewBox="0 0 1200 680" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <style>
+    text { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Apple SD Gothic Neo", "Noto Sans KR", sans-serif; }
+    .title { font-size: 38px; font-weight: 850; fill: #102027; }
+    .sub { font-size: 17px; font-weight: 500; fill: #5d6c73; }
+    .path { font-size: 19px; font-weight: 850; fill: #102027; }
+    .desc { font-size: 14px; font-weight: 650; fill: #5B6B72; }
+    .section { font-size: 15px; font-weight: 900; fill: #0f766e; }
+  </style>
+  <rect width="1200" height="680" rx="34" fill="#F8FAFA"/>
+  <rect x="54" y="50" width="1092" height="580" rx="30" fill="white" stroke="#D7E2E5"/>
+  <text x="92" y="112" class="title">코드 구조 지도</text>
+  <text x="94" y="147" class="sub">처음 보는 사람이 어떤 폴더를 먼저 봐야 하는지 알 수 있도록 역할별로 나눈 구조입니다.</text>
+
+  <g transform="translate(88 210)">
+    <rect width="316" height="112" rx="20" fill="#F2F8F8" stroke="#CFE1E2"/>
+    <text x="24" y="34" class="section">웹앱 화면</text>
+    <text x="24" y="66" class="path">app/ · components/</text>
+    <text x="24" y="92" class="desc">랜딩, 인터랙티브 화면, 공용 UI</text>
+  </g>
+  <g transform="translate(442 210)">
+    <rect width="316" height="112" rx="20" fill="#F6F8FF" stroke="#D5DDF2"/>
+    <text x="24" y="34" class="section">인터랙션 로직</text>
+    <text x="24" y="66" class="path">lib/interactive/</text>
+    <text x="24" y="92" class="desc">제스처, 음성 parser, 효과, 게임</text>
+  </g>
+  <g transform="translate(796 210)">
+    <rect width="316" height="112" rx="20" fill="#F2FBF5" stroke="#D3E8D8"/>
+    <text x="24" y="34" class="section">정적 리소스</text>
+    <text x="24" y="66" class="path">public/</text>
+    <text x="24" y="92" class="desc">이미지, MediaPipe wasm, 모델 파일</text>
+  </g>
+
+  <g transform="translate(88 368)">
+    <rect width="316" height="112" rx="20" fill="#FFF8EC" stroke="#E8DCC6"/>
+    <text x="24" y="34" class="section">Python 핵심</text>
+    <text x="24" y="66" class="path">src/gesture_bridge/</text>
+    <text x="24" y="92" class="desc">카메라, 랜드마크, 실행 모드</text>
+  </g>
+  <g transform="translate(442 368)">
+    <rect width="316" height="112" rx="20" fill="#F7FAFA" stroke="#D7E2E5"/>
+    <text x="24" y="34" class="section">설정과 데이터</text>
+    <text x="24" y="66" class="path">configs/ · data/ · models/</text>
+    <text x="24" y="92" class="desc">라벨, 말뭉치, 학습 모델</text>
+  </g>
+  <g transform="translate(796 368)">
+    <rect width="316" height="112" rx="20" fill="#F2F8F8" stroke="#CFE1E2"/>
+    <text x="24" y="34" class="section">문서와 테스트</text>
+    <text x="24" y="66" class="path">docs/ · tests/</text>
+    <text x="24" y="92" class="desc">연구 메모, README 이미지, 검증</text>
+  </g>
+
+  <text x="92" y="565" class="desc">추천 탐색 순서: README → app/page.tsx → components/interactive → lib/interactive → src/gesture_bridge/modes → src/gesture_bridge/sign</text>
+</svg>
