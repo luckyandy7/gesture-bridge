@@ -2,16 +2,19 @@
 
 import Image from "next/image"
 import Link from "next/link"
-import { useCallback, useEffect, useRef, useState } from "react"
+import { memo, useCallback, useEffect, useRef, useState, type ReactNode } from "react"
 import { Shader, ChromaFlow, Swirl } from "shaders/react"
 import {
   ArrowLeft,
   Box,
   Camera,
+  ChevronRight,
   CloudSun,
+  Crosshair,
   Eraser,
   Gamepad2,
   Hand,
+  HeartPulse,
   HelpCircle,
   Home,
   ImageIcon,
@@ -23,10 +26,15 @@ import {
   Paintbrush,
   Pause,
   Play,
+  Minus,
+  Plus,
+  RefreshCw,
   Save,
   Settings,
   Sparkles,
+  Timer,
   Trash2,
+  Trophy,
   Undo2,
   WandSparkles,
   Volume2,
@@ -36,8 +44,35 @@ import { CosmicParticlePlayground } from "@/components/interactive/CosmicParticl
 import { SatoruTechniquePanel } from "@/components/interactive/SatoruTechniquePanel"
 import { CustomCursor } from "@/components/custom-cursor"
 import { GrainOverlay } from "@/components/grain-overlay"
-import { createEffectParticles, EFFECT_DEFINITIONS, getEffectDefinition, type EffectParticle } from "@/lib/interactive/features/effects"
-import { getMiniGameDefinition, getNextMiniGame } from "@/lib/interactive/features/mini-games"
+import {
+  createEffectParticles,
+  drawEffectField,
+  drawEffectParticles,
+  EFFECT_DEFINITIONS,
+  EFFECT_PARTICLE_LIMIT,
+  getEffectDefinition,
+  stepEffectParticles,
+  type EffectParticle,
+} from "@/lib/interactive/features/effects"
+import {
+  createMiniGameRuntime,
+  drawMiniGame,
+  getMiniGameHudState,
+  stepMiniGame,
+  type MiniGameHudState,
+  type MiniGameRuntime,
+} from "@/lib/interactive/features/mini-game-runtime"
+import { getMiniGameDefinition, getNextMiniGame, MINI_GAME_DEFINITIONS } from "@/lib/interactive/features/mini-games"
+import {
+  getNextThreeScene,
+  getThreeSceneDefinition,
+  InteractiveThreeRuntime,
+  THREE_QUALITY_OPTIONS,
+  THREE_SCENE_DEFINITIONS,
+  type ThreeQuality,
+  type ThreeRuntimeTelemetry,
+  type ThreeSceneId,
+} from "@/lib/interactive/features/three-scene-runtime"
 import { GestureComboManager } from "@/lib/interactive/gesture/gesture-combo-manager"
 import {
   createEmptyGestureSnapshot,
@@ -97,32 +132,6 @@ type HandLandmarkerLike = {
 
 type DrawingTool = "pen" | "eraser"
 
-type GameObject = {
-  id: number
-  x: number
-  y: number
-  vx: number
-  vy: number
-  r: number
-  kind: string
-  life: number
-  color: string
-}
-
-type MiniGameRuntime = {
-  id: MiniGameId
-  score: number
-  lives: number
-  objects: GameObject[]
-  ball?: GameObject
-  target?: GameObject
-  timer: number
-  lastSpawn: number
-  lastPinch: boolean
-  message: string
-  pointerTrail: Point[]
-}
-
 const MODE_LABELS: Record<InteractiveMode, string> = {
   home: "홈",
   image: "사진",
@@ -151,7 +160,48 @@ const MODE_ITEMS: Array<{ mode: InteractiveMode; icon: typeof Home; helper: stri
   { mode: "settings", icon: Settings, helper: "명령 도움말" },
 ]
 
-const INITIAL_IMAGES: FloatingImagePanel[] = []
+const INITIAL_IMAGES: FloatingImagePanel[] = [
+  {
+    id: 0,
+    title: "인터랙티브 스테이지",
+    src: "/brand/mode-interactive-stage.png",
+    x: 0.46,
+    y: 0.48,
+    scale: 1,
+    rotation: -4,
+    visible: true,
+  },
+  {
+    id: 1,
+    title: "수어 문장 모드",
+    src: "/brand/mode-sign-sentence.png",
+    x: 0.63,
+    y: 0.38,
+    scale: 0.76,
+    rotation: 7,
+    visible: true,
+  },
+  {
+    id: 2,
+    title: "PC 제어 모드",
+    src: "/brand/mode-pc-control.png",
+    x: 0.34,
+    y: 0.62,
+    scale: 0.72,
+    rotation: -9,
+    visible: true,
+  },
+  {
+    id: 3,
+    title: "Gesture Bridge",
+    src: "/brand/gesture-bridge-banner.png",
+    x: 0.68,
+    y: 0.66,
+    scale: 0.64,
+    rotation: 4,
+    visible: true,
+  },
+]
 
 const DRAW_COLORS = ["#38bdf8", "#ef4444", "#f97316", "#facc15", "#22c55e", "#a855f7", "#ffffff"]
 const MUSIC_TRACKS = ["네온 펄스", "스카이 라인", "에너지 필드"]
@@ -209,6 +259,11 @@ const HAND_CONNECTIONS = [
   [19, 20],
 ] as const
 
+const UI_SNAPSHOT_INTERVAL_MS = 50
+const HAND_TRACKING_INTERVAL_MS = 1000 / 30
+const EFFECT_FRAME_INTERVAL_MS = 1000 / 30
+const INTERACTIVE_CANVAS_MAX_DPR = 1.4
+
 export function InteractiveExperience() {
   const stageRef = useRef<HTMLDivElement>(null)
   const videoRef = useRef<HTMLVideoElement>(null)
@@ -236,6 +291,9 @@ export function InteractiveExperience() {
   const lastGestureActionRef = useRef<Record<string, number>>({})
   const lastEffectAtRef = useRef(-9999)
   const lastPinchUiRef = useRef(0)
+  const lastSnapshotUiAtRef = useRef(0)
+  const lastHandDetectAtRef = useRef(0)
+  const lastCameraSnapshotRef = useRef<GestureSnapshot | null>(null)
   const mountedRef = useRef(false)
 
   const [mode, setMode] = useState<InteractiveMode>("home")
@@ -254,11 +312,13 @@ export function InteractiveExperience() {
   const [drawingColor, setDrawingColor] = useState(DRAW_COLORS[0])
   const [drawingSize, setDrawingSize] = useState(5)
   const [activeEffect, setActiveEffect] = useState<EffectId>("particle_burst")
+  const [effectPower, setEffectPower] = useState(1)
   const [miniGame, setMiniGame] = useState<MiniGameId>("catch")
-  const [gameScore, setGameScore] = useState(0)
-  const [gameMessage, setGameMessage] = useState("손 포인터를 움직여 게임을 시작하세요.")
+  const [gameHud, setGameHud] = useState<MiniGameHudState>(() => getMiniGameHudState(createMiniGameRuntime("catch")))
   const [threeVisible, setThreeVisible] = useState(true)
   const [threeScale, setThreeScale] = useState(1)
+  const [threeScene, setThreeScene] = useState<ThreeSceneId>("gesture_core")
+  const [threeQuality, setThreeQuality] = useState<ThreeQuality>("balanced")
   const [musicPlaying, setMusicPlaying] = useState(false)
   const [volume, setVolume] = useState(0.46)
   const [muted, setMuted] = useState(false)
@@ -295,13 +355,21 @@ export function InteractiveExperience() {
       if (!manualTrigger && now - lastEffectAtRef.current < 1180) return
       lastEffectAtRef.current = now
       setActiveEffect(effectId)
-      particlesRef.current = createEffectParticles(effectId, x, y, Math.floor(now), amount)
+      const burstAmount = amount ?? Math.round(getEffectDefinition(effectId).burstSize * effectPower)
+      particlesRef.current = [...particlesRef.current, ...createEffectParticles(effectId, x, y, Math.floor(now), burstAmount)].slice(-EFFECT_PARTICLE_LIMIT)
       if (manualTrigger || now - (lastGestureActionRef.current["effect-log"] ?? 0) > 1600) {
         lastGestureActionRef.current["effect-log"] = now
         addLog(`${getEffectDefinition(effectId).label} 효과를 실행했습니다.`, "success")
       }
     },
-    [addLog],
+    [addLog, effectPower],
+  )
+
+  const triggerEffectFromPanel = useCallback(
+    (effectId: EffectId) => {
+      pushEffect(effectId, undefined, Math.round(getEffectDefinition(effectId).burstSize * effectPower))
+    },
+    [effectPower, pushEffect],
   )
 
   const resetImages = useCallback(() => {
@@ -316,7 +384,10 @@ export function InteractiveExperience() {
   const nextImage = useCallback(() => {
     setImages((previous) => {
       const visible = previous.filter((image) => image.visible)
-      if (visible.length === 0) return previous.map((image) => ({ ...image, visible: true }))
+      if (visible.length === 0) {
+        setSelectedImageId(previous[0]?.id ?? 0)
+        return previous.map((image) => ({ ...image, visible: true }))
+      }
       const index = visible.findIndex((image) => image.id === selectedImageId)
       const next = visible[(index + 1 + visible.length) % visible.length]
       setSelectedImageId(next.id)
@@ -328,7 +399,10 @@ export function InteractiveExperience() {
   const previousImage = useCallback(() => {
     setImages((previous) => {
       const visible = previous.filter((image) => image.visible)
-      if (visible.length === 0) return previous.map((image) => ({ ...image, visible: true }))
+      if (visible.length === 0) {
+        setSelectedImageId(previous[0]?.id ?? 0)
+        return previous.map((image) => ({ ...image, visible: true }))
+      }
       const index = visible.findIndex((image) => image.id === selectedImageId)
       const next = visible[(index - 1 + visible.length) % visible.length]
       setSelectedImageId(next.id)
@@ -336,6 +410,11 @@ export function InteractiveExperience() {
     })
     addLog("이전 사진을 선택했습니다.", "success")
   }, [addLog, selectedImageId])
+
+  const selectImage = useCallback((imageId: number) => {
+    setSelectedImageId(imageId)
+    setImages((previous) => previous.map((image) => (image.id === imageId ? { ...image, visible: true } : image)))
+  }, [])
 
   const saveDrawing = useCallback(() => {
     const canvas = drawingCanvasRef.current
@@ -383,12 +462,21 @@ export function InteractiveExperience() {
   const switchMiniGame = useCallback(
     (next?: MiniGameId) => {
       const target = next ?? getNextMiniGame(miniGame)
+      const runtime = createMiniGameRuntime(target)
       setMiniGame(target)
-      gameRuntimeRef.current = null
+      gameRuntimeRef.current = runtime
+      setGameHud(getMiniGameHudState(runtime))
       changeMode("game", `${getMiniGameDefinition(target).label} 게임을 시작합니다.`)
     },
     [changeMode, miniGame],
   )
+
+  const restartMiniGame = useCallback(() => {
+    const runtime = createMiniGameRuntime(miniGame)
+    gameRuntimeRef.current = runtime
+    setGameHud(getMiniGameHudState(runtime))
+    changeMode("game", `${getMiniGameDefinition(miniGame).label} 게임을 다시 시작합니다.`)
+  }, [changeMode, miniGame])
 
   const ensureAudio = useCallback(async () => {
     const AudioContextCtor = window.AudioContext || (window as typeof window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext
@@ -656,17 +744,29 @@ export function InteractiveExperience() {
       setCameraState("손 추적 모델 로딩")
       const vision = await import("@mediapipe/tasks-vision")
       const fileset = await vision.FilesetResolver.forVisionTasks("/mediapipe/wasm")
-      landmarkerRef.current = await vision.HandLandmarker.createFromOptions(fileset, {
-        baseOptions: {
-          modelAssetPath: "/models/hand_landmarker.task",
-          delegate: "CPU",
-        },
-        runningMode: "VIDEO",
-        numHands: 2,
-      })
 
-      setCameraState("카메라 손 추적 중")
-      addLog("카메라 손 추적을 시작했습니다.", "success")
+      const createLandmarker = (delegate: "GPU" | "CPU") =>
+        vision.HandLandmarker.createFromOptions(fileset, {
+          baseOptions: {
+            modelAssetPath: "/models/hand_landmarker.task",
+            delegate,
+          },
+          runningMode: "VIDEO",
+          numHands: 2,
+        })
+
+      try {
+        setCameraState("GPU 손 추적 모델 로딩")
+        landmarkerRef.current = await createLandmarker("GPU")
+        setCameraState("GPU 손 추적 중")
+        addLog("GPU 손 추적을 시작했습니다.", "success")
+      } catch (gpuError) {
+        console.warn("GPU hand tracking initialization failed. Falling back to CPU.", gpuError)
+        setCameraState("GPU 실패, CPU 재시도")
+        landmarkerRef.current = await createLandmarker("CPU")
+        setCameraState("CPU 손 추적 중")
+        addLog("GPU 초기화에 실패해 CPU 손 추적으로 전환했습니다.", "warning")
+      }
     } catch (error) {
       console.error(error)
       const hasCameraStream = Boolean(streamRef.current)
@@ -689,6 +789,8 @@ export function InteractiveExperience() {
     landmarkerRef.current?.close?.()
     landmarkerRef.current = null
     smoothedPointerRef.current = null
+    lastCameraSnapshotRef.current = null
+    lastHandDetectAtRef.current = 0
     setTrackingMode("simulation")
     setCameraState("마우스 시뮬레이션")
     addLog("카메라를 끄고 시뮬레이션으로 전환했습니다.", "info")
@@ -735,6 +837,7 @@ export function InteractiveExperience() {
       const now = nextSnapshot.timestamp
       const dominant = nextSnapshot.activeGesture
       const pinching = isPinching(nextSnapshot)
+      const simulationIdlePoint = trackingMode === "simulation" && dominant === "point" && !pointerDownRef.current
       const combo = comboManagerRef.current.feed(dominant, now)
       nextSnapshot.comboProgress = combo.progress
 
@@ -793,16 +896,20 @@ export function InteractiveExperience() {
         lastDrawPointRef.current = null
       }
 
-      if (mode === "effects") {
+      if (mode === "effects" && !simulationIdlePoint) {
         const effect = getEffectForSnapshot(nextSnapshot)
         if (effect && shouldRun("effect-global", now, 1180)) pushEffect(effect, nextSnapshot.pointer)
       }
 
       if (mode === "three") {
+        if ((nextSnapshot.swipe === "left" || nextSnapshot.swipe === "right") && shouldRun("three-scene-swipe", now, 820)) {
+          setThreeScene((scene) => getNextThreeScene(scene))
+        }
+        if (dominant === "fist" && shouldRun("three-scale-reset", now, 1200)) setThreeScale(1)
         if (Math.abs(nextSnapshot.twoHandDelta) > 0.008) setThreeScale((scale) => clamp(scale + nextSnapshot.twoHandDelta * 2.1, 0.55, 2.3))
       }
     },
-    [addLog, changeMode, clearDrawing, drawAtPointer, mode, nextImage, previousImage, pushEffect, resetImages, updateSelectedImage],
+    [addLog, changeMode, clearDrawing, drawAtPointer, mode, nextImage, previousImage, pushEffect, resetImages, trackingMode, updateSelectedImage],
   )
 
   useEffect(() => {
@@ -828,31 +935,40 @@ export function InteractiveExperience() {
       const video = videoRef.current
       const landmarker = landmarkerRef.current
       if (trackingMode === "camera" && video && landmarker && video.readyState >= 2) {
-        try {
-          const result = landmarker.detectForVideo(video, now)
-          const recognized = recognizeGestureSnapshot({
-            landmarks: result.landmarks ?? [],
-            handednesses: result.handednesses,
-            previousHistory: gestureHistoryRef.current,
-            previousTwoHandDistance: previousTwoHandDistanceRef.current,
-            timestamp: now,
-          })
-          gestureHistoryRef.current = recognized.history
-          previousTwoHandDistanceRef.current = recognized.snapshot.twoHandDistance
-          if (recognized.snapshot.hands.length > 0) {
-            const mappedSnapshot = mirrorSnapshotForStage(recognized.snapshot, video, stageRef.current?.getBoundingClientRect())
-            nextSnapshot = smoothSnapshotPointer(mappedSnapshot, smoothedPointerRef)
-          } else {
-            smoothedPointerRef.current = null
+        nextSnapshot = lastCameraSnapshotRef.current ?? nextSnapshot
+        if (now - lastHandDetectAtRef.current >= HAND_TRACKING_INTERVAL_MS) {
+          lastHandDetectAtRef.current = now
+          try {
+            const result = landmarker.detectForVideo(video, now)
+            const recognized = recognizeGestureSnapshot({
+              landmarks: result.landmarks ?? [],
+              handednesses: result.handednesses,
+              previousHistory: gestureHistoryRef.current,
+              previousTwoHandDistance: previousTwoHandDistanceRef.current,
+              timestamp: now,
+            })
+            gestureHistoryRef.current = recognized.history
+            previousTwoHandDistanceRef.current = recognized.snapshot.twoHandDistance
+            if (recognized.snapshot.hands.length > 0) {
+              const mappedSnapshot = mirrorSnapshotForStage(recognized.snapshot, video, stageRef.current?.getBoundingClientRect())
+              nextSnapshot = smoothSnapshotPointer(mappedSnapshot, smoothedPointerRef)
+            } else {
+              smoothedPointerRef.current = null
+              nextSnapshot = recognized.snapshot
+            }
+            lastCameraSnapshotRef.current = nextSnapshot
+          } catch {
+            setCameraState("손 추적 재시도 중")
           }
-        } catch {
-          setCameraState("손 추적 재시도 중")
         }
       }
 
       latestSnapshotRef.current = nextSnapshot
       handleGestureActions(nextSnapshot)
-      setSnapshot({ ...nextSnapshot })
+      if (now - lastSnapshotUiAtRef.current >= UI_SNAPSHOT_INTERVAL_MS) {
+        lastSnapshotUiAtRef.current = now
+        setSnapshot({ ...nextSnapshot })
+      }
       raf = requestAnimationFrame(loop)
     }
 
@@ -875,7 +991,7 @@ export function InteractiveExperience() {
       const rect = stageRef.current?.getBoundingClientRect()
       ;[drawingCanvasRef.current, effectsCanvasRef.current, gameCanvasRef.current].forEach((canvas) => {
         if (!canvas || !rect) return
-        const scale = window.devicePixelRatio || 1
+        const scale = Math.min(window.devicePixelRatio || 1, INTERACTIVE_CANVAS_MAX_DPR)
         const width = Math.floor(rect.width * scale)
         const height = Math.floor(rect.height * scale)
         if (canvas.width !== width || canvas.height !== height) {
@@ -895,29 +1011,40 @@ export function InteractiveExperience() {
 
   useEffect(() => {
     let raf = 0
-    const render = () => {
+    let lastPaintAt = 0
+    let canvasHadContent = false
+    const render = (timestamp: number) => {
       const canvas = effectsCanvasRef.current
       const context = canvas?.getContext("2d")
       if (!canvas || !context) return
+      const hasContent = mode === "effects" || particlesRef.current.length > 0
+      if (!hasContent) {
+        if (canvasHadContent) {
+          context.clearRect(0, 0, canvas.width, canvas.height)
+          canvasHadContent = false
+        }
+        raf = requestAnimationFrame(render)
+        return
+      }
+      if (timestamp - lastPaintAt < EFFECT_FRAME_INTERVAL_MS) {
+        raf = requestAnimationFrame(render)
+        return
+      }
+      const frameScale = lastPaintAt > 0 ? Math.min((timestamp - lastPaintAt) / 16.67, 2.4) : 1
+      lastPaintAt = timestamp
+      canvasHadContent = true
       const rect = stageRef.current?.getBoundingClientRect()
       context.clearRect(0, 0, rect?.width ?? canvas.width, rect?.height ?? canvas.height)
-      drawParticles(context, particlesRef.current)
-      particlesRef.current = particlesRef.current
-        .map((particle) => ({
-          ...particle,
-          x: particle.x + particle.vx,
-          y: particle.y + particle.vy,
-          vx: particle.vx * 0.985,
-          vy: particle.vy * 0.985,
-          life: particle.life - 1 / particle.maxLife,
-          spin: particle.spin + 0.006,
-        }))
-        .filter((particle) => particle.life > 0)
+      if (mode === "effects" && rect) {
+        drawEffectField(context, rect, latestSnapshotRef.current.pointer, activeEffect, isPinching(latestSnapshotRef.current))
+      }
+      drawEffectParticles(context, particlesRef.current)
+      particlesRef.current = stepEffectParticles(particlesRef.current, latestSnapshotRef.current.pointer, rect ?? undefined, frameScale)
       raf = requestAnimationFrame(render)
     }
     raf = requestAnimationFrame(render)
     return () => cancelAnimationFrame(raf)
-  }, [])
+  }, [activeEffect, mode])
 
   useEffect(() => {
     let raf = 0
@@ -931,10 +1058,12 @@ export function InteractiveExperience() {
         if (!gameRuntimeRef.current || gameRuntimeRef.current.id !== miniGame) {
           gameRuntimeRef.current = createMiniGameRuntime(miniGame)
         }
-        stepMiniGame(gameRuntimeRef.current, rect, latestSnapshotRef.current.pointer, isPinching(latestSnapshotRef.current))
-        setGameScore(gameRuntimeRef.current.score)
-        setGameMessage(gameRuntimeRef.current.message)
-        drawMiniGame(context, rect, gameRuntimeRef.current, latestSnapshotRef.current.pointer)
+        const runtime = gameRuntimeRef.current
+        const hud = stepMiniGame(runtime, rect, latestSnapshotRef.current.pointer, isPinching(latestSnapshotRef.current))
+        if (runtime.frame % 3 === 0 || hud.status !== "playing") {
+          setGameHud(hud)
+        }
+        drawMiniGame(context, rect, runtime, latestSnapshotRef.current.pointer)
       } else {
         context.clearRect(0, 0, rect.width, rect.height)
       }
@@ -1064,17 +1193,52 @@ export function InteractiveExperience() {
               playsInline
               muted
             />
-            <canvas ref={drawingCanvasRef} className="pointer-events-none absolute inset-0 z-20" />
+            <canvas ref={drawingCanvasRef} className={`pointer-events-none absolute inset-0 z-20 transition-opacity duration-200 ${mode === "drawing" ? "opacity-100" : "opacity-0"}`} />
             <canvas ref={effectsCanvasRef} className="pointer-events-none absolute inset-0 z-30" />
             <canvas ref={gameCanvasRef} className={`pointer-events-none absolute inset-0 z-40 ${mode === "game" ? "opacity-100" : "opacity-0"}`} />
 
             <StageStatus mode={mode} cameraState={cameraState} voiceState={voiceState} snapshot={snapshot} />
             {mode === "weather" ? <WeatherPanel weather={weather} loading={weatherLoading} onRequest={() => void requestWeather("서울")} /> : null}
+            {mode === "image" ? (
+              <ImageModePanel
+                images={images}
+                selectedImageId={selectedImageId}
+                onSelect={selectImage}
+                onNext={nextImage}
+                onPrevious={previousImage}
+                onReset={resetImages}
+                onHide={() => updateSelectedImage((image) => ({ ...image, visible: false }))}
+                onZoomIn={() => updateSelectedImage((image) => ({ ...image, scale: Math.min(1.85, image.scale + 0.14) }))}
+                onZoomOut={() => updateSelectedImage((image) => ({ ...image, scale: Math.max(0.54, image.scale - 0.14) }))}
+              />
+            ) : null}
             {mode === "satoru" ? <SatoruTechniquePanel /> : null}
             {mode === "particles" ? <CosmicParticlePlayground pointer={snapshot.pointer} activeGesture={snapshot.activeGesture} pinching={isPinching(snapshot)} /> : null}
-            {mode === "effects" ? <EffectPanel activeEffect={activeEffect} onTrigger={pushEffect} /> : null}
-            {mode === "game" ? <GamePanel definition={activeGameDefinition} score={gameScore} message={gameMessage} onNext={() => switchMiniGame()} /> : null}
-            {mode === "three" ? <ThreeObjectPanel visible={threeVisible} pointer={snapshot.pointer} scale={threeScale} activeGesture={snapshot.activeGesture} /> : null}
+            {mode === "effects" ? <EffectPanel activeEffect={activeEffect} effectPower={effectPower} onPower={setEffectPower} onTrigger={triggerEffectFromPanel} /> : null}
+            {mode === "game" ? (
+              <GamePanel
+                definition={activeGameDefinition}
+                hud={gameHud}
+                selectedGame={miniGame}
+                onSelect={switchMiniGame}
+                onRestart={restartMiniGame}
+                onNext={() => switchMiniGame()}
+              />
+            ) : null}
+            {mode === "three" ? (
+              <ThreeObjectPanel
+                visible={threeVisible}
+                snapshot={snapshot}
+                scale={threeScale}
+                sceneId={threeScene}
+                quality={threeQuality}
+                onVisible={setThreeVisible}
+                onScene={setThreeScene}
+                onQuality={setThreeQuality}
+                onResetScale={() => setThreeScale(1)}
+                onNextScene={() => setThreeScene((scene) => getNextThreeScene(scene))}
+              />
+            ) : null}
             {mode === "music" ? (
               <MusicPanel
                 playing={musicPlaying}
@@ -1332,170 +1496,499 @@ function WeatherMetric({ label, value }: { label: string; value: string }) {
   )
 }
 
-function EffectPanel({ activeEffect, onTrigger }: { activeEffect: EffectId; onTrigger: (effect: EffectId) => void }) {
+function ImageModePanel({
+  images,
+  selectedImageId,
+  onSelect,
+  onNext,
+  onPrevious,
+  onReset,
+  onHide,
+  onZoomIn,
+  onZoomOut,
+}: {
+  images: FloatingImagePanel[]
+  selectedImageId: number
+  onSelect: (imageId: number) => void
+  onNext: () => void
+  onPrevious: () => void
+  onReset: () => void
+  onHide: () => void
+  onZoomIn: () => void
+  onZoomOut: () => void
+}) {
+  const selectedImage = images.find((image) => image.id === selectedImageId) ?? images[0]
+  const sortedImages = [...images].sort((left, right) => {
+    if (left.id === selectedImageId) return 1
+    if (right.id === selectedImageId) return -1
+    return left.id - right.id
+  })
+
   return (
-    <div className="absolute bottom-5 left-5 right-5 z-50 rounded-lg border border-foreground/10 bg-background/44 p-4 backdrop-blur-xl">
-      <div className="mb-3 flex items-center justify-between">
-        <div>
-          <p className="text-xs text-foreground/48">시각 효과 시스템</p>
-          <h2 className="text-lg font-semibold">{getEffectDefinition(activeEffect).label}</h2>
-        </div>
-        <Sparkles className="h-6 w-6 text-foreground/82" />
-      </div>
-      <div className="grid max-h-48 gap-2 overflow-y-auto pr-1 sm:grid-cols-2 xl:grid-cols-4">
-        {EFFECT_DEFINITIONS.map((effect) => (
+    <div className="pointer-events-none absolute inset-0 z-[26]">
+      {sortedImages.map((image) => {
+        if (!image.visible) return null
+        const active = image.id === selectedImageId
+        const width = active ? 360 * image.scale : 260 * image.scale
+        return (
           <button
-            key={effect.id}
-            onClick={() => onTrigger(effect.id)}
-            className={`rounded-lg border p-3 text-left transition ${
-              activeEffect === effect.id ? "border-foreground/36 bg-foreground/14" : "border-foreground/8 bg-foreground/6 hover:bg-foreground/11"
+            key={image.id}
+            onClick={() => onSelect(image.id)}
+            className={`pointer-events-auto absolute overflow-hidden rounded-lg border bg-background/70 text-left shadow-2xl shadow-black/28 transition-all duration-300 ${
+              active ? "z-20 border-white/48 ring-2 ring-white/12" : "z-10 border-white/16 opacity-82 hover:opacity-100"
             }`}
+            style={{
+              left: `${image.x * 100}%`,
+              top: `${image.y * 100}%`,
+              width: `${Math.round(width)}px`,
+              maxWidth: "min(72vw, 430px)",
+              transform: `translate(-50%, -50%) rotate(${image.rotation}deg)`,
+            }}
+            aria-label={`${image.title} 선택`}
           >
-            <p className="text-sm font-semibold">{effect.label}</p>
-            <p className="mt-1 text-[11px] leading-relaxed text-foreground/54">{effect.gestureHint}</p>
+            <div className="relative aspect-[16/10] w-full">
+              <Image src={image.src} alt={image.title} fill sizes="430px" className="object-cover" priority={active} />
+              <div className="absolute inset-0 bg-[linear-gradient(180deg,transparent_54%,rgba(0,0,0,0.62))]" />
+              <div className="absolute bottom-0 left-0 right-0 p-3">
+                <p className="truncate text-sm font-semibold text-white">{image.title}</p>
+                <p className="mt-0.5 text-[10px] text-white/62">{active ? "선택됨 · 집기로 이동" : "클릭해서 선택"}</p>
+              </div>
+            </div>
           </button>
-        ))}
+        )
+      })}
+
+      <div className="pointer-events-auto absolute bottom-4 left-4 w-[min(520px,calc(100%-32px))] rounded-lg border border-foreground/10 bg-background/72 p-3 shadow-lg shadow-black/20">
+        <div className="flex items-start justify-between gap-3">
+          <div className="min-w-0">
+            <p className="text-xs text-foreground/48">사진 패널 · 손 제어</p>
+            <h2 className="mt-1 truncate text-lg font-semibold">{selectedImage?.title ?? "사진 없음"}</h2>
+          </div>
+          <div className="flex shrink-0 items-center gap-2">
+            <IconButton label="이전 사진" onClick={onPrevious}>
+              <ChevronRight className="h-4 w-4 rotate-180" />
+            </IconButton>
+            <IconButton label="다음 사진" onClick={onNext}>
+              <ChevronRight className="h-4 w-4" />
+            </IconButton>
+          </div>
+        </div>
+        <div className="mt-3 flex flex-wrap items-center gap-2">
+          <IconButton label="확대" onClick={onZoomIn}>
+            <Plus className="h-4 w-4" />
+          </IconButton>
+          <IconButton label="축소" onClick={onZoomOut}>
+            <Minus className="h-4 w-4" />
+          </IconButton>
+          <IconButton label="숨기기" onClick={onHide}>
+            <Trash2 className="h-4 w-4" />
+          </IconButton>
+          <button
+            onClick={onReset}
+            className="inline-flex items-center gap-1.5 rounded-lg border border-foreground/8 bg-foreground/6 px-2.5 py-2 text-xs text-foreground/66 transition hover:bg-foreground/11 hover:text-foreground"
+          >
+            <RefreshCw className="h-3.5 w-3.5" />
+            재배치
+          </button>
+        </div>
+        <div className="mt-3 flex gap-2 overflow-x-auto pb-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+          {images.map((image) => (
+            <button
+              key={image.id}
+              onClick={() => onSelect(image.id)}
+              className={`min-w-[120px] rounded-lg border p-2 text-left transition ${
+                image.id === selectedImageId
+                  ? "border-foreground/36 bg-foreground/14 text-foreground"
+                  : "border-foreground/8 bg-foreground/6 text-foreground/68 hover:border-foreground/20 hover:bg-foreground/11 hover:text-foreground"
+              }`}
+            >
+              <span className="mb-1.5 flex items-center gap-1.5 text-[10px] text-foreground/46">
+                <ImageIcon className="h-3 w-3" />
+                {image.visible ? "표시 중" : "숨김"}
+              </span>
+              <span className="block truncate text-xs font-semibold">{image.title}</span>
+            </button>
+          ))}
+        </div>
       </div>
     </div>
   )
 }
 
+function IconButton({ label, onClick, children }: { label: string; onClick: () => void; children: ReactNode }) {
+  return (
+    <button
+      onClick={onClick}
+      className="grid h-9 w-9 place-items-center rounded-lg border border-foreground/12 bg-foreground/8 text-foreground/78 transition hover:bg-foreground/14 hover:text-foreground"
+      aria-label={label}
+      title={label}
+    >
+      {children}
+    </button>
+  )
+}
+
+const EffectPanel = memo(function EffectPanel({
+  activeEffect,
+  effectPower,
+  onPower,
+  onTrigger,
+}: {
+  activeEffect: EffectId
+  effectPower: number
+  onPower: (power: number) => void
+  onTrigger: (effect: EffectId) => void
+}) {
+  const definition = getEffectDefinition(activeEffect)
+  const powerOptions = [
+    { label: "절제", value: 0.7 },
+    { label: "표준", value: 1 },
+    { label: "강화", value: 1.35 },
+  ]
+
+  return (
+    <div className="absolute bottom-5 left-5 z-50 w-[min(560px,calc(100%-40px))] rounded-lg border border-foreground/10 bg-background/78 p-4 shadow-lg shadow-black/20">
+      <div className="grid gap-4">
+        <div>
+          <div className="flex items-start justify-between gap-3">
+            <div className="min-w-0">
+              <p className="text-xs text-foreground/48">시각 효과 시스템 · {definition.category}</p>
+              <h2 className="mt-1 truncate text-xl font-semibold">{definition.label}</h2>
+            </div>
+            <button
+              onClick={() => onTrigger(activeEffect)}
+              className="grid h-10 w-10 shrink-0 place-items-center rounded-lg border border-foreground/12 bg-foreground/10 text-foreground/82 transition hover:bg-foreground/16 hover:text-foreground"
+              aria-label={`${definition.label} 효과 실행`}
+            >
+              <Sparkles className="h-4 w-4" />
+            </button>
+          </div>
+          <p className="mt-3 text-sm leading-relaxed text-foreground/72">{definition.description}</p>
+          <div className="mt-3 grid gap-2 text-xs text-foreground/58">
+            <div className="flex items-center justify-between gap-3 rounded-lg border border-foreground/8 bg-foreground/6 px-3 py-2">
+              <span>움직임</span>
+              <span className="truncate text-foreground/78">{definition.motion}</span>
+            </div>
+            <div className="flex items-center justify-between gap-3 rounded-lg border border-foreground/8 bg-foreground/6 px-3 py-2">
+              <span>제스처</span>
+              <span className="truncate text-foreground/78">{definition.gestureHint}</span>
+            </div>
+          </div>
+          <div className="mt-3 flex flex-wrap items-center gap-2">
+            {powerOptions.map((option) => (
+              <button
+                key={option.value}
+                onClick={() => onPower(option.value)}
+                className={`rounded-lg border px-3 py-2 text-xs font-medium transition ${
+                  Math.abs(effectPower - option.value) < 0.01
+                    ? "border-foreground/36 bg-foreground/16 text-foreground"
+                    : "border-foreground/8 bg-foreground/6 text-foreground/66 hover:bg-foreground/11 hover:text-foreground"
+                }`}
+              >
+                {option.label}
+              </button>
+            ))}
+          </div>
+        </div>
+        <div className="flex gap-2 overflow-x-auto pb-1">
+          {EFFECT_DEFINITIONS.map((effect) => (
+            <button
+              key={effect.id}
+              onClick={() => onTrigger(effect.id)}
+              className={`min-w-[150px] rounded-lg border p-3 text-left transition ${
+                activeEffect === effect.id
+                  ? "border-foreground/36 bg-foreground/14 text-foreground shadow-lg shadow-black/18"
+                  : "border-foreground/8 bg-foreground/6 text-foreground/70 hover:border-foreground/20 hover:bg-foreground/11 hover:text-foreground"
+              }`}
+            >
+              <div className="mb-2 flex items-center gap-1.5">
+                {effect.colors.map((color) => (
+                  <span key={color} className="h-2.5 w-2.5 rounded-full border border-white/20" style={{ backgroundColor: color }} />
+                ))}
+              </div>
+              <p className="truncate text-sm font-semibold">{effect.label}</p>
+              <p className="mt-1 truncate text-[11px] text-foreground/48">{effect.category} · {effect.motion}</p>
+            </button>
+          ))}
+        </div>
+      </div>
+    </div>
+  )
+})
+
 function GamePanel({
   definition,
-  score,
-  message,
+  hud,
+  selectedGame,
+  onSelect,
+  onRestart,
   onNext,
 }: {
   definition: ReturnType<typeof getMiniGameDefinition>
-  score: number
-  message: string
+  hud: MiniGameHudState
+  selectedGame: MiniGameId
+  onSelect: (game: MiniGameId) => void
+  onRestart: () => void
   onNext: () => void
 }) {
+  const statusText = hud.status === "cleared" ? "클리어" : hud.status === "danger" ? "위험" : `라운드 ${hud.round}`
+  const [detailsOpen, setDetailsOpen] = useState(false)
+
   return (
-    <div className="absolute bottom-5 left-5 z-50 w-[min(420px,calc(100%-40px))] rounded-lg border border-foreground/12 bg-background/44 p-4 backdrop-blur-xl">
-      <div className="flex items-start justify-between gap-4">
-        <div>
-          <p className="text-xs text-foreground/58">제스처 미니게임</p>
-          <h2 className="mt-1 text-2xl font-semibold">{definition.label}</h2>
+    <div className="absolute bottom-5 left-5 z-50 w-[min(460px,calc(100%-40px))] rounded-lg border border-foreground/12 bg-background/40 p-3 shadow-2xl shadow-black/28 backdrop-blur-xl">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="min-w-0">
+          <p className="text-xs text-foreground/58">제스처 미니게임 · {definition.skill}</p>
+          <h2 className="mt-1 truncate text-xl font-semibold">{definition.label}</h2>
         </div>
-        <div className="rounded-lg border border-foreground/10 bg-foreground/8 px-3 py-2 text-right">
-          <p className="text-[10px] text-foreground/46">점수</p>
-          <p className="text-xl font-semibold">{score}</p>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => setDetailsOpen((value) => !value)}
+            className={`grid h-9 w-9 place-items-center rounded-lg border transition ${
+              detailsOpen ? "border-foreground/36 bg-foreground/16 text-foreground" : "border-foreground/10 bg-foreground/8 text-foreground/76 hover:bg-foreground/14 hover:text-foreground"
+            }`}
+            aria-label={detailsOpen ? "게임 설명 닫기" : "게임 설명 열기"}
+          >
+            <HelpCircle className="h-4 w-4" />
+          </button>
+          <button
+            onClick={onRestart}
+            className="grid h-9 w-9 place-items-center rounded-lg border border-foreground/10 bg-foreground/8 text-foreground/76 transition hover:bg-foreground/14 hover:text-foreground"
+            aria-label="현재 게임 다시 시작"
+          >
+            <RefreshCw className="h-4 w-4" />
+          </button>
+          <button
+            onClick={onNext}
+            className="grid h-9 w-9 place-items-center rounded-lg border border-foreground/10 bg-foreground/8 text-foreground/76 transition hover:bg-foreground/14 hover:text-foreground"
+            aria-label="다음 게임"
+          >
+            <ChevronRight className="h-4 w-4" />
+          </button>
         </div>
       </div>
-      <p className="mt-3 text-sm text-foreground/70">{definition.instruction}</p>
-      <p className="mt-2 text-xs text-foreground/66">{message}</p>
-      <button onClick={onNext} className="mt-4 rounded-lg border border-foreground/12 bg-foreground/8 px-3 py-2 text-xs text-foreground/76 transition hover:bg-foreground/14">
-        다음 게임
-      </button>
+      <div className="mt-3 grid grid-cols-4 gap-2">
+        <GameMetric icon={Trophy} label="점수" value={`${hud.score}`} />
+        <GameMetric icon={HeartPulse} label="기회" value={`${hud.lives}/3`} tone={hud.lives <= 1 ? "danger" : "default"} />
+        <GameMetric icon={Crosshair} label="콤보" value={`${hud.combo}x`} />
+        <GameMetric icon={Timer} label="남은 시간" value={`${hud.timeRemaining}s`} />
+      </div>
+      <div className="mt-3">
+        <div className="flex items-center justify-between gap-3 text-[11px] text-foreground/58">
+          <span>{statusText}</span>
+          <span>목표 {hud.targetScore} · 정확도 {hud.accuracy}% · 최고 {hud.bestCombo}x</span>
+        </div>
+        <div className="mt-2 h-2 overflow-hidden rounded-full bg-foreground/10">
+          <div className="h-full rounded-full transition-[width] duration-200" style={{ width: `${hud.progress * 100}%`, backgroundColor: definition.accent }} />
+        </div>
+      </div>
+      <p className="mt-2 truncate text-xs text-foreground/62">{hud.message}</p>
+      {detailsOpen ? (
+        <>
+          <div className="mt-3 rounded-lg border border-foreground/10 bg-foreground/7 p-3">
+            <p className="text-sm font-medium text-foreground/88">{definition.objective}</p>
+            <p className="mt-2 text-[11px] text-foreground/46">입력: {definition.inputHint} · 음성: {definition.command}</p>
+          </div>
+          <div className="mt-3 grid max-h-28 grid-cols-2 gap-2 overflow-y-auto pr-1 sm:grid-cols-3">
+            {MINI_GAME_DEFINITIONS.map((game) => (
+              <button
+                key={game.id}
+                onClick={() => {
+                  setDetailsOpen(false)
+                  onSelect(game.id)
+                }}
+                className={`rounded-lg border px-3 py-2 text-left transition ${
+                  selectedGame === game.id
+                    ? "border-foreground/36 bg-foreground/16 text-foreground"
+                    : "border-foreground/8 bg-foreground/6 text-foreground/68 hover:border-foreground/20 hover:bg-foreground/11 hover:text-foreground"
+                }`}
+              >
+                <span className="block truncate text-xs font-semibold">{game.label}</span>
+                <span className="mt-0.5 block truncate text-[10px] text-foreground/48">{game.skill}</span>
+              </button>
+            ))}
+          </div>
+        </>
+      ) : null}
+    </div>
+  )
+}
+
+function GameMetric({
+  icon: Icon,
+  label,
+  value,
+  tone = "default",
+}: {
+  icon: typeof Trophy
+  label: string
+  value: string
+  tone?: "default" | "danger"
+}) {
+  return (
+    <div className={`rounded-lg border px-3 py-2 ${tone === "danger" ? "border-rose-300/24 bg-rose-300/10" : "border-foreground/10 bg-foreground/7"}`}>
+      <div className="flex items-center gap-1.5 whitespace-nowrap text-[10px] text-foreground/48">
+        <Icon className="h-3 w-3" />
+        {label}
+      </div>
+      <p className="mt-1 text-lg font-semibold leading-none">{value}</p>
     </div>
   )
 }
 
 function ThreeObjectPanel({
   visible,
-  pointer,
   scale,
-  activeGesture,
+  snapshot,
+  sceneId,
+  quality,
+  onVisible,
+  onScene,
+  onQuality,
+  onResetScale,
+  onNextScene,
 }: {
   visible: boolean
-  pointer: Point
+  snapshot: GestureSnapshot
   scale: number
-  activeGesture: GestureName
+  sceneId: ThreeSceneId
+  quality: ThreeQuality
+  onVisible: (visible: boolean) => void
+  onScene: (scene: ThreeSceneId) => void
+  onQuality: (quality: ThreeQuality) => void
+  onResetScale: () => void
+  onNextScene: () => void
 }) {
   const containerRef = useRef<HTMLDivElement>(null)
-  const pointerRef = useRef(pointer)
-  const scaleRef = useRef(scale)
-  const gestureRef = useRef(activeGesture)
+  const runtimeRef = useRef<InteractiveThreeRuntime | null>(null)
+  const latestRef = useRef({ snapshot, scale, sceneId, quality, visible })
+  const [telemetry, setTelemetry] = useState<ThreeRuntimeTelemetry>({ calls: 0, triangles: 0, objects: 0 })
+  const definition = getThreeSceneDefinition(sceneId)
 
   useEffect(() => {
-    pointerRef.current = pointer
-    scaleRef.current = scale
-    gestureRef.current = activeGesture
-  }, [activeGesture, pointer, scale])
+    latestRef.current = { snapshot, scale, sceneId, quality, visible }
+  }, [quality, scale, sceneId, snapshot, visible])
 
   useEffect(() => {
-    if (!visible || !containerRef.current) return
+    if (!containerRef.current) return
     let disposed = false
-    let cleanup: (() => void) | undefined
+    let raf = 0
+    let resizeObserver: ResizeObserver | null = null
+    let lastTelemetryAt = 0
 
     const init = async () => {
       const THREE = await import("three")
       if (disposed || !containerRef.current) return
-      const rect = containerRef.current.getBoundingClientRect()
-      const scene = new THREE.Scene()
-      const camera = new THREE.PerspectiveCamera(52, rect.width / rect.height, 0.1, 100)
-      camera.position.z = 4
-      const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true })
-      renderer.setSize(rect.width, rect.height)
-      renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2))
-      containerRef.current.appendChild(renderer.domElement)
+      const runtime = new InteractiveThreeRuntime(THREE, containerRef.current, latestRef.current.sceneId, latestRef.current.quality)
+      runtimeRef.current = runtime
+      resizeObserver = new ResizeObserver(() => runtime.resize())
+      resizeObserver.observe(containerRef.current)
 
-      const geometry = new THREE.IcosahedronGeometry(1.05, 2)
-      const material = new THREE.MeshStandardMaterial({
-        color: 0x9ed7d2,
-        emissive: 0x1f3f39,
-        roughness: 0.25,
-        metalness: 0.55,
-        wireframe: false,
-      })
-      const mesh = new THREE.Mesh(geometry, material)
-      scene.add(mesh)
-      const wire = new THREE.LineSegments(new THREE.WireframeGeometry(geometry), new THREE.LineBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.18 }))
-      mesh.add(wire)
-      scene.add(new THREE.AmbientLight(0xffffff, 1.4))
-      const light = new THREE.PointLight(0x9ed7d2, 10, 12)
-      light.position.set(2, 2, 3)
-      scene.add(light)
-
-      let raf = 0
-      const animate = () => {
-        const p = pointerRef.current
-        mesh.rotation.y += 0.01 + (p.x - 0.5) * 0.025
-        mesh.rotation.x += 0.008 + (p.y - 0.5) * 0.018
-        const targetScale = scaleRef.current * (gestureRef.current === "pinch" ? 1.08 : 1)
-        mesh.scale.lerp(new THREE.Vector3(targetScale, targetScale, targetScale), 0.08)
-        light.position.x = (p.x - 0.5) * 5
-        light.position.y = (0.5 - p.y) * 4
-        renderer.render(scene, camera)
+      const animate = (timestamp: number) => {
+        const latest = latestRef.current
+        runtime.update({ ...latest, timestamp })
+        if (timestamp - lastTelemetryAt > 650) {
+          lastTelemetryAt = timestamp
+          setTelemetry(runtime.telemetry())
+        }
         raf = requestAnimationFrame(animate)
       }
-      animate()
-
-      const resize = () => {
-        if (!containerRef.current) return
-        const next = containerRef.current.getBoundingClientRect()
-        camera.aspect = next.width / next.height
-        camera.updateProjectionMatrix()
-        renderer.setSize(next.width, next.height)
-      }
-      window.addEventListener("resize", resize)
-
-      cleanup = () => {
-        cancelAnimationFrame(raf)
-        window.removeEventListener("resize", resize)
-        renderer.dispose()
-        geometry.dispose()
-        material.dispose()
-        containerRef.current?.replaceChildren()
-      }
+      raf = requestAnimationFrame(animate)
     }
 
     void init()
     return () => {
       disposed = true
-      cleanup?.()
+      cancelAnimationFrame(raf)
+      resizeObserver?.disconnect()
+      runtimeRef.current?.dispose()
+      runtimeRef.current = null
     }
-  }, [visible])
-
-  if (!visible) return null
+  }, [])
 
   return (
-    <div className="absolute inset-x-8 top-28 z-[25] h-[44%] rounded-lg border border-foreground/12 bg-foreground/6 backdrop-blur-sm">
-      <div ref={containerRef} className="h-full w-full" />
-      <div className="absolute left-4 top-4 rounded-lg border border-foreground/10 bg-background/42 px-3 py-2 text-xs text-foreground/72 backdrop-blur-xl">
-        3D 오브젝트 · 손 이동으로 회전 · 양손 거리로 확대
+    <div className="pointer-events-none absolute inset-0 z-[25]">
+      <div ref={containerRef} className={`absolute inset-0 transition-opacity duration-300 ${visible ? "opacity-100" : "opacity-0"}`} />
+      <div className="pointer-events-auto absolute bottom-4 left-4 w-[min(440px,calc(100%-32px))] rounded-lg border border-foreground/10 bg-background/72 p-3 shadow-lg shadow-black/20">
+        <div className="flex items-start justify-between gap-3">
+          <div className="min-w-0">
+            <p className="text-xs text-foreground/48">3D 씬 · {definition.gestureFocus}</p>
+            <h2 className="mt-1 truncate text-lg font-semibold">{definition.label}</h2>
+          </div>
+          <div className="flex shrink-0 items-center gap-2">
+            <button
+              onClick={onNextScene}
+              className="grid h-9 w-9 place-items-center rounded-lg border border-foreground/12 bg-foreground/8 text-foreground/78 transition hover:bg-foreground/14 hover:text-foreground"
+              aria-label="다음 3D 씬"
+            >
+              <ChevronRight className="h-4 w-4" />
+            </button>
+            <button
+              onClick={() => onVisible(!visible)}
+              className="grid h-9 w-9 place-items-center rounded-lg border border-foreground/12 bg-foreground/8 text-foreground/78 transition hover:bg-foreground/14 hover:text-foreground"
+              aria-label={visible ? "3D 숨기기" : "3D 표시"}
+            >
+              <Box className="h-4 w-4" />
+            </button>
+          </div>
+        </div>
+        <div className="mt-2 grid grid-cols-3 gap-2 text-xs">
+          <ThreeMetric label="배율" value={`${scale.toFixed(2)}x`} />
+          <ThreeMetric label="드로우콜" value={`${telemetry.calls}`} />
+          <ThreeMetric label="삼각형" value={compactNumber(telemetry.triangles)} />
+        </div>
+        <div className="mt-2 flex flex-wrap items-center gap-2">
+          {THREE_QUALITY_OPTIONS.map((option) => (
+            <button
+              key={option.id}
+              onClick={() => onQuality(option.id)}
+              className={`rounded-lg border px-2.5 py-1.5 text-xs font-medium transition ${
+                quality === option.id
+                  ? "border-foreground/36 bg-foreground/16 text-foreground"
+                  : "border-foreground/8 bg-foreground/6 text-foreground/66 hover:bg-foreground/11 hover:text-foreground"
+              }`}
+            >
+              {option.label}
+            </button>
+          ))}
+          <button
+            onClick={onResetScale}
+            className="inline-flex items-center gap-1.5 rounded-lg border border-foreground/8 bg-foreground/6 px-2.5 py-1.5 text-xs text-foreground/66 transition hover:bg-foreground/11 hover:text-foreground"
+          >
+            <RefreshCw className="h-3.5 w-3.5" />
+            초기화
+          </button>
+        </div>
+        <div className="mt-2 flex gap-2 overflow-x-auto pb-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+          {THREE_SCENE_DEFINITIONS.map((scene) => (
+            <button
+              key={scene.id}
+              onClick={() => onScene(scene.id)}
+              className={`min-w-[116px] rounded-lg border p-2.5 text-left transition ${
+                sceneId === scene.id
+                  ? "border-foreground/36 bg-foreground/14 text-foreground shadow-lg shadow-black/18"
+                  : "border-foreground/8 bg-foreground/6 text-foreground/70 hover:border-foreground/20 hover:bg-foreground/11 hover:text-foreground"
+              }`}
+            >
+              <span className="mb-1.5 block h-2 w-7 rounded-full border border-white/20" style={{ backgroundColor: scene.accent }} />
+              <span className="block truncate text-xs font-semibold">{scene.label}</span>
+              <span className="mt-1 block truncate text-[11px] text-foreground/48">{scene.gestureFocus}</span>
+            </button>
+          ))}
+        </div>
       </div>
+      <div className="pointer-events-none absolute right-5 top-28 rounded-lg border border-foreground/10 bg-background/48 px-3 py-2 text-xs text-foreground/64">
+        {visible ? `${snapshot.hands.length} hand · ${GESTURE_LABELS[snapshot.activeGesture]}` : "3D hidden"}
+      </div>
+    </div>
+  )
+}
+
+function ThreeMetric({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="rounded-lg border border-foreground/8 bg-foreground/6 px-2.5 py-1.5">
+      <p className="text-[10px] text-foreground/46">{label}</p>
+      <p className="mt-1 truncate text-sm font-semibold text-foreground/88">{value}</p>
     </div>
   )
 }
@@ -1758,329 +2251,10 @@ function smoothSnapshotPointer(snapshot: GestureSnapshot, pointerRef: { current:
   }
 }
 
-function drawParticles(context: CanvasRenderingContext2D, particles: EffectParticle[]) {
-  for (const particle of particles) {
-    context.save()
-    context.globalAlpha = Math.max(0, particle.life)
-    context.translate(particle.x, particle.y)
-    context.rotate(particle.spin * particle.maxLife)
-    context.fillStyle = particle.color
-    context.strokeStyle = particle.color
-    context.shadowBlur = 18
-    context.shadowColor = particle.color
-
-    if (particle.kind === "ring" || particle.kind === "wave") {
-      context.lineWidth = Math.max(1, particle.radius * 0.45)
-      context.beginPath()
-      context.arc(0, 0, (1 - particle.life) * particle.maxLife * 2.4 + particle.radius, 0, Math.PI * 2)
-      context.stroke()
-    } else if (particle.kind === "beam") {
-      context.fillRect(0, -particle.radius * 0.4, particle.radius * 10, particle.radius * 0.8)
-    } else if (particle.kind === "slash") {
-      context.lineWidth = particle.radius
-      context.beginPath()
-      context.moveTo(-particle.radius * 8, -particle.radius)
-      context.lineTo(particle.radius * 8, particle.radius)
-      context.stroke()
-    } else {
-      context.beginPath()
-      context.arc(0, 0, particle.radius, 0, Math.PI * 2)
-      context.fill()
-    }
-    context.restore()
-  }
-}
-
-function createMiniGameRuntime(id: MiniGameId): MiniGameRuntime {
-  return {
-    id,
-    score: 0,
-    lives: 3,
-    objects: [],
-    timer: 0,
-    lastSpawn: 0,
-    lastPinch: false,
-    message: getMiniGameDefinition(id).instruction,
-    pointerTrail: [],
-  }
-}
-
-function stepMiniGame(game: MiniGameRuntime, rect: DOMRect, pointer: Point, pinching: boolean) {
-  const px = pointer.x * rect.width
-  const py = pointer.y * rect.height
-  game.timer += 1
-  game.pointerTrail = [...game.pointerTrail.slice(-6), { x: px, y: py }]
-
-  if (game.id === "catch") {
-    spawnEvery(game, 42, rect, "core")
-    game.objects.forEach((object) => {
-      object.y += object.vy
-      if (distancePoint(object, { x: px, y: py }) < object.r + 34) {
-        object.life = 0
-        game.score += 10
-        game.message = "코어를 받았습니다."
-      } else if (object.y > rect.height + 30) {
-        object.life = 0
-        game.lives -= 1
-        game.message = "놓쳤습니다. 손을 더 빠르게 움직이세요."
-      }
-    })
-  }
-
-  if (game.id === "bubble") {
-    spawnEvery(game, 28, rect, "bubble")
-    game.objects.forEach((object) => {
-      object.x += object.vx
-      object.y += object.vy
-      if (distancePoint(object, { x: px, y: py }) < object.r + 24) {
-        object.life = 0
-        game.score += 5
-        game.message = "버블 터짐"
-      }
-    })
-  }
-
-  if (game.id === "pong") {
-    if (!game.ball) game.ball = { id: 1, x: rect.width * 0.5, y: rect.height * 0.5, vx: 5, vy: 4, r: 14, kind: "ball", life: 1, color: "#38bdf8" }
-    const ball = game.ball
-    ball.x += ball.vx
-    ball.y += ball.vy
-    if (ball.y < 30 || ball.y > rect.height - 30) ball.vy *= -1
-    if (ball.x > rect.width - 35 && Math.abs(ball.y - py) < 88) {
-      ball.vx = -Math.abs(ball.vx) - 0.15
-      game.score += 3
-      game.message = "패들 반사 성공"
-    }
-    if (ball.x < 25) ball.vx = Math.abs(ball.vx)
-    if (ball.x > rect.width + 40) {
-      game.ball = undefined
-      game.lives -= 1
-      game.message = "공을 놓쳤습니다."
-    }
-  }
-
-  if (game.id === "avoid") {
-    spawnEvery(game, 36, rect, "hazard")
-    game.objects.forEach((object) => {
-      object.x += object.vx
-      object.y += object.vy
-      if (distancePoint(object, { x: px, y: py }) < object.r + 22) {
-        object.life = 0
-        game.lives -= 1
-        game.message = "장애물 충돌"
-      } else if (object.x < -40 || object.x > rect.width + 40 || object.y > rect.height + 40) {
-        object.life = 0
-        game.score += 1
-      }
-    })
-  }
-
-  if (game.id === "slice") {
-    spawnEvery(game, 38, rect, "slice")
-    const speed = getTrailSpeed(game.pointerTrail)
-    game.objects.forEach((object) => {
-      object.x += object.vx
-      object.y += object.vy
-      if (speed > 22 && distancePoint(object, { x: px, y: py }) < object.r + 28) {
-        object.life = 0
-        game.score += 8
-        game.message = "절단 성공"
-      }
-    })
-  }
-
-  if (game.id === "throw") {
-    if (!game.ball) game.ball = { id: 1, x: px, y: py, vx: 0, vy: 0, r: 18, kind: "throw", life: 1, color: "#f97316" }
-    const ball = game.ball
-    if (pinching) {
-      ball.x = px
-      ball.y = py
-      const velocity = getTrailVelocity(game.pointerTrail)
-      ball.vx = velocity.x * 0.8
-      ball.vy = velocity.y * 0.8
-      game.message = "집기 상태에서 손을 움직인 뒤 놓으세요."
-    } else {
-      ball.x += ball.vx
-      ball.y += ball.vy
-      ball.vy += 0.16
-      ball.vx *= 0.99
-      if (ball.x > rect.width * 0.72 && ball.y < rect.height * 0.34) {
-        game.score += 12
-        game.ball = undefined
-        game.message = "목표점 명중"
-      }
-      if (ball.y > rect.height + 80 || ball.x < -80 || ball.x > rect.width + 80) game.ball = undefined
-    }
-  }
-
-  if (game.id === "reaction") {
-    if (!game.target || game.timer % 120 === 0) {
-      game.target = {
-        id: game.timer,
-        x: rect.width * (0.22 + Math.random() * 0.56),
-        y: rect.height * (0.22 + Math.random() * 0.5),
-        vx: 0,
-        vy: 0,
-        r: 34,
-        kind: game.timer % 240 < 120 ? "wait" : "go",
-        life: 1,
-        color: game.timer % 240 < 120 ? "#f59e0b" : "#22c55e",
-      }
-      game.message = game.target.kind === "go" ? "지금 터치하세요." : "초록 신호를 기다리세요."
-    }
-    if (game.target.kind === "go" && distancePoint(game.target, { x: px, y: py }) < game.target.r + 20) {
-      game.score += 15
-      game.target = undefined
-      game.message = "빠른 반응 성공"
-    }
-  }
-
-  if (game.id === "rhythm") {
-    if (game.timer % 88 === 0) {
-      game.objects.push({ id: game.timer, x: rect.width * 0.5, y: rect.height * 0.5, vx: 0, vy: 0, r: 160, kind: "ring", life: 1, color: "#a855f7" })
-    }
-    game.objects.forEach((object) => {
-      object.r -= 2.2
-      if (object.r < 45 && object.r > 18 && distancePoint(object, { x: px, y: py }) < 88) {
-        object.life = 0
-        game.score += 10
-        game.message = "박자 성공"
-      }
-      if (object.r < 6) object.life = 0
-    })
-  }
-
-  if (game.id === "target") {
-    spawnEvery(game, 55, rect, "target")
-    game.objects.forEach((object) => {
-      object.x += object.vx
-      object.y += object.vy
-      if (pinching && !game.lastPinch && distancePoint(object, { x: px, y: py }) < object.r + 32) {
-        object.life = 0
-        game.score += 10
-        game.message = "표적 명중"
-      }
-    })
-  }
-
-  game.lastPinch = pinching
-  game.objects = game.objects.filter((object) => object.life > 0 && object.y < rect.height + 90 && object.x > -90 && object.x < rect.width + 90)
-  if (game.lives <= 0) {
-    game.score = Math.max(0, game.score - 5)
-    game.lives = 3
-    game.objects = []
-    game.ball = undefined
-    game.message = "다시 시작합니다."
-  }
-}
-
-function drawMiniGame(context: CanvasRenderingContext2D, rect: DOMRect, game: MiniGameRuntime, pointer: Point) {
-  context.clearRect(0, 0, rect.width, rect.height)
-  context.save()
-  context.fillStyle = "rgba(0,0,0,0.28)"
-  context.fillRect(0, 0, rect.width, rect.height)
-
-  const px = pointer.x * rect.width
-  const py = pointer.y * rect.height
-  context.strokeStyle = "rgba(103,232,249,0.55)"
-  context.lineWidth = 2
-  context.beginPath()
-  context.arc(px, py, 34, 0, Math.PI * 2)
-  context.stroke()
-
-  if (game.id === "pong") {
-    context.fillStyle = "rgba(255,255,255,0.7)"
-    context.fillRect(rect.width - 26, py - 82, 12, 164)
-  }
-  if (game.id === "throw") {
-    context.strokeStyle = "rgba(249,115,22,0.75)"
-    context.beginPath()
-    context.arc(rect.width * 0.8, rect.height * 0.22, 42, 0, Math.PI * 2)
-    context.stroke()
-  }
-
-  const drawObject = (object: GameObject) => {
-    context.save()
-    context.fillStyle = object.color
-    context.strokeStyle = object.color
-    context.shadowColor = object.color
-    context.shadowBlur = 18
-    if (object.kind === "ring") {
-      context.lineWidth = 4
-      context.beginPath()
-      context.arc(object.x, object.y, object.r, 0, Math.PI * 2)
-      context.stroke()
-    } else if (object.kind === "hazard") {
-      context.beginPath()
-      context.rect(object.x - object.r, object.y - object.r, object.r * 2, object.r * 2)
-      context.fill()
-    } else {
-      context.beginPath()
-      context.arc(object.x, object.y, object.r, 0, Math.PI * 2)
-      context.fill()
-    }
-    context.restore()
-  }
-
-  game.objects.forEach(drawObject)
-  if (game.ball) drawObject(game.ball)
-  if (game.target) drawObject(game.target)
-
-  context.fillStyle = "rgba(255,255,255,0.76)"
-  context.font = "12px sans-serif"
-  context.fillText(`점수 ${game.score} · 기회 ${game.lives}`, 20, 30)
-  context.restore()
-}
-
-function spawnEvery(game: MiniGameRuntime, interval: number, rect: DOMRect, kind: string) {
-  if (game.timer - game.lastSpawn < interval) return
-  game.lastSpawn = game.timer
-  const colorByKind: Record<string, string> = {
-    core: "#38bdf8",
-    bubble: "#67e8f9",
-    hazard: "#ef4444",
-    slice: "#facc15",
-    target: "#f43f5e",
-  }
-  const object: GameObject = {
-    id: game.timer + Math.random(),
-    x: Math.random() * rect.width,
-    y: kind === "bubble" ? rect.height + 40 : -30,
-    vx: kind === "hazard" || kind === "target" ? -2 + Math.random() * 4 : -0.8 + Math.random() * 1.6,
-    vy: kind === "bubble" ? -1.5 - Math.random() * 2 : 2 + Math.random() * 3.5,
-    r: 16 + Math.random() * 20,
-    kind,
-    life: 1,
-    color: colorByKind[kind] ?? "#38bdf8",
-  }
-  if (kind === "hazard") {
-    object.x = Math.random() > 0.5 ? -25 : rect.width + 25
-    object.y = Math.random() * rect.height
-    object.vx = object.x < 0 ? 3 + Math.random() * 3 : -3 - Math.random() * 3
-    object.vy = -1 + Math.random() * 2
-  }
-  if (kind === "target") {
-    object.y = 120 + Math.random() * (rect.height - 220)
-  }
-  game.objects.push(object)
-}
-
-function getTrailSpeed(trail: Point[]) {
-  if (trail.length < 2) return 0
-  const first = trail[0]
-  const last = trail[trail.length - 1]
-  return Math.hypot(last.x - first.x, last.y - first.y)
-}
-
-function getTrailVelocity(trail: Point[]) {
-  if (trail.length < 2) return { x: 0, y: 0 }
-  const first = trail[0]
-  const last = trail[trail.length - 1]
-  return { x: (last.x - first.x) / trail.length, y: (last.y - first.y) / trail.length }
-}
-
-function distancePoint(a: { x: number; y: number }, b: Point) {
-  return Math.hypot(a.x - b.x, a.y - b.y)
+function compactNumber(value: number) {
+  if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1)}m`
+  if (value >= 1_000) return `${(value / 1_000).toFixed(1)}k`
+  return `${value}`
 }
 
 function clamp(value: number, min: number, max: number) {
