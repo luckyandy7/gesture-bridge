@@ -5,7 +5,7 @@
 기존 `signlanguageProject`라는 이름은 수화 기능만 떠올리게 해서 현재 범위를 충분히 설명하지 못합니다. 이 저장소는 손동작, 수화 gloss, 한국어 음성 명령, 웹 인터랙션을 연결하는 프로젝트이므로 `Gesture Bridge`를 공식 이름으로 사용합니다.
 
 <p align="center">
-  <img src="docs/assets/readme-01-overview-ko.svg" alt="Gesture Bridge 전체 구조" width="100%" />
+  <img src="docs/assets/readme-01-overview-ko.png" alt="Gesture Bridge 전체 구조" width="100%" />
 </p>
 
 ## 목차
@@ -78,49 +78,49 @@ Gesture Bridge는 같은 카메라 입력에서 출발하지만 목적이 다른
 ### 1. 처음 화면의 세 가지 입구
 
 <p align="center">
-  <img src="docs/assets/readme-02-mode-select-ko.svg" alt="처음 화면에서 선택하는 세 가지 기능" width="100%" />
+  <img src="docs/assets/readme-02-mode-select-ko.png" alt="처음 화면에서 선택하는 세 가지 기능" width="100%" />
 </p>
 
 ### 2. Python 런타임 흐름
 
 <p align="center">
-  <img src="docs/assets/readme-03-python-runtime-ko.svg" alt="Python 런타임에서 PC 제어와 수화 문장 모드가 나뉘는 흐름" width="100%" />
+  <img src="docs/assets/readme-03-python-runtime-ko.png" alt="Python 런타임에서 PC 제어와 수화 문장 모드가 나뉘는 흐름" width="100%" />
 </p>
 
 ### 3. 수화 문장 인식 파이프라인
 
 <p align="center">
-  <img src="docs/assets/readme-04-sign-sentence-pipeline-ko.svg" alt="수화 문장 인식 파이프라인" width="100%" />
+  <img src="docs/assets/readme-04-sign-sentence-pipeline-ko.png" alt="수화 문장 인식 파이프라인" width="100%" />
 </p>
 
 ### 4. 인터랙티브 웹 스테이지 구조
 
 <p align="center">
-  <img src="docs/assets/readme-05-interactive-stage-ko.svg" alt="인터랙티브 웹 스테이지 구조" width="100%" />
+  <img src="docs/assets/readme-05-interactive-stage-ko.png" alt="인터랙티브 웹 스테이지 구조" width="100%" />
 </p>
 
 ### 5. 코드 구조 지도
 
 <p align="center">
-  <img src="docs/assets/readme-06-code-map-ko.svg" alt="Gesture Bridge 코드 구조 지도" width="100%" />
+  <img src="docs/assets/readme-06-code-map-ko.png" alt="Gesture Bridge 코드 구조 지도" width="100%" />
 </p>
 
 ### 6. 데이터셋과 문장 리소스 흐름
 
 <p align="center">
-  <img src="docs/assets/readme-07-data-resources-ko.svg" alt="수화 문장 데이터셋과 문장 리소스 흐름" width="100%" />
+  <img src="docs/assets/readme-07-data-resources-ko.png" alt="수화 문장 데이터셋과 문장 리소스 흐름" width="100%" />
 </p>
 
 ### 7. 자주 쓰는 실행 명령
 
 <p align="center">
-  <img src="docs/assets/readme-08-command-cheatsheet-ko.svg" alt="자주 쓰는 실행 명령 요약" width="100%" />
+  <img src="docs/assets/readme-08-command-cheatsheet-ko.png" alt="자주 쓰는 실행 명령 요약" width="100%" />
 </p>
 
 ### 8. 제스처와 한국어 명령 처리 흐름
 
 <p align="center">
-  <img src="docs/assets/readme-09-command-dispatch-ko.svg" alt="제스처와 한국어 음성 명령이 dispatcher로 모이는 흐름" width="100%" />
+  <img src="docs/assets/readme-09-command-dispatch-ko.png" alt="제스처와 한국어 음성 명령이 dispatcher로 모이는 흐름" width="100%" />
 </p>
 
 ## 빠른 실행
