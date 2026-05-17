@@ -12,9 +12,11 @@ import {
   Camera,
   Captions,
   Check,
+  Database,
   Hand,
   Mic2,
   Pause,
+  Plus,
   RotateCcw,
   Sparkles,
   Trash2,
@@ -24,8 +26,15 @@ import { CustomCursor } from "@/components/custom-cursor"
 import { GrainOverlay } from "@/components/grain-overlay"
 import {
   flattenHolisticFrameFeatures,
+  getBrowserKnnLabelCounts,
   hasEnoughHolisticSignal,
-  loadBrowserKnnModel,
+  addBrowserKnnCustomLabel,
+  addBrowserKnnTrainingSample,
+  clearBrowserKnnCustomTraining,
+  loadBaseBrowserKnnModel,
+  loadStoredBrowserKnnModel,
+  normalizeBrowserKnnLabel,
+  readBrowserKnnCustomTraining,
   predictSignSequence,
   readFaceExpression,
   type BrowserKnnModel,
@@ -122,6 +131,7 @@ export function SignTextExperience() {
   const overlayCanvasRef = useRef<HTMLCanvasElement>(null)
   const streamRef = useRef<MediaStream | null>(null)
   const landmarkerRef = useRef<HolisticLandmarkerLike | null>(null)
+  const baseModelRef = useRef<BrowserKnnModel | null>(null)
   const modelRef = useRef<BrowserKnnModel | null>(null)
   const memoryRef = useRef<SentenceMemoryEntry[]>([])
   const sequenceRef = useRef<number[][]>([])
@@ -150,19 +160,38 @@ export function SignTextExperience() {
   const [finalized, setFinalized] = useState<FinalizedSentence[]>([])
   const [finishProgress, setFinishProgress] = useState(0)
   const [lastSpoken, setLastSpoken] = useState("")
+  const [availableLabels, setAvailableLabels] = useState<string[]>(SAMPLE_TOKENS)
+  const [labelCounts, setLabelCounts] = useState<Array<{ label: string; count: number }>>([])
+  const [trainingLabel, setTrainingLabel] = useState("")
+  const [selectedTrainingLabel, setSelectedTrainingLabel] = useState("")
+  const [trainingMessage, setTrainingMessage] = useState("라벨을 추가한 뒤 카메라 앞에서 같은 동작을 유지하고 샘플을 학습하세요.")
+  const [customTrainingCount, setCustomTrainingCount] = useState(0)
+
+  const syncModelUi = useCallback((model: BrowserKnnModel, message?: string) => {
+    const custom = readBrowserKnnCustomTraining(baseModelRef.current)
+    const counts = getBrowserKnnLabelCounts(model)
+    setAvailableLabels(model.labels)
+    setLabelCounts(counts)
+    setCustomTrainingCount(custom?.samples.length ?? 0)
+    setSelectedTrainingLabel((previous) => (previous && model.labels.includes(previous) ? previous : model.labels[0] ?? ""))
+    setModelState(`웹 KNN 준비 (${model.labels.length} labels · ${model.samples.length} samples)`)
+    if (message) setTrainingMessage(message)
+  }, [])
 
   const preloadResources = useCallback(async () => {
     try {
       setModelState("문장 메모리 로딩")
-      const [model, memory] = await Promise.all([loadBrowserKnnModel(), loadSentenceMemory()])
+      const [baseModel, memory] = await Promise.all([loadBaseBrowserKnnModel(), loadSentenceMemory()])
+      const model = loadStoredBrowserKnnModel(baseModel)
+      baseModelRef.current = baseModel
       modelRef.current = model
       memoryRef.current = memory
-      setModelState(`웹 KNN 준비 (${model.labels.length} labels)`)
+      syncModelUi(model)
     } catch (error) {
       console.error(error)
       setModelState("웹 모델 로딩 실패")
     }
-  }, [])
+  }, [syncModelUi])
 
   useEffect(() => {
     mountedRef.current = true
@@ -372,6 +401,67 @@ export function SignTextExperience() {
     setFinishProgress(0)
     setLlmState("LLM 대기")
   }, [])
+
+  const addTrainingLabel = useCallback(() => {
+    const baseModel = baseModelRef.current
+    if (!baseModel) {
+      setTrainingMessage("기본 모델이 아직 로딩되지 않았습니다.")
+      return
+    }
+
+    try {
+      const label = normalizeBrowserKnnLabel(trainingLabel)
+      const nextModel = addBrowserKnnCustomLabel(baseModel, label)
+      modelRef.current = nextModel
+      setTrainingLabel("")
+      setSelectedTrainingLabel(label)
+      predictionHistoryRef.current = []
+      syncModelUi(nextModel, `"${label}" 라벨을 추가했습니다. 같은 동작을 여러 번 학습하면 안정도가 올라갑니다.`)
+    } catch (error) {
+      setTrainingMessage(error instanceof Error ? error.message : "라벨 추가에 실패했습니다.")
+    }
+  }, [syncModelUi, trainingLabel])
+
+  const captureTrainingSample = useCallback(() => {
+    const baseModel = baseModelRef.current
+    const label = normalizeBrowserKnnLabel(selectedTrainingLabel)
+    if (!baseModel) {
+      setTrainingMessage("기본 모델이 아직 로딩되지 않았습니다.")
+      return
+    }
+    if (!label) {
+      setTrainingMessage("학습할 라벨을 먼저 선택하세요.")
+      return
+    }
+    if (sequenceRef.current.length < baseModel.sequenceLength) {
+      setTrainingMessage(`샘플 버퍼가 부족합니다. 현재 ${sequenceRef.current.length}/${baseModel.sequenceLength}프레임입니다.`)
+      return
+    }
+
+    try {
+      const nextModel = addBrowserKnnTrainingSample(baseModel, label, sequenceRef.current)
+      modelRef.current = nextModel
+      sequenceRef.current = []
+      predictionHistoryRef.current = []
+      const nextCount = getBrowserKnnLabelCounts(nextModel).find((item) => item.label === label)?.count ?? 0
+      syncModelUi(nextModel, `"${label}" 샘플을 학습했습니다. 현재 이 라벨 샘플 ${nextCount}개입니다.`)
+    } catch (error) {
+      setTrainingMessage(error instanceof Error ? error.message : "샘플 학습에 실패했습니다.")
+    }
+  }, [selectedTrainingLabel, syncModelUi])
+
+  const resetCustomTraining = useCallback(() => {
+    const baseModel = baseModelRef.current
+    if (!baseModel) {
+      setTrainingMessage("기본 모델이 아직 로딩되지 않았습니다.")
+      return
+    }
+    clearBrowserKnnCustomTraining()
+    modelRef.current = baseModel
+    sequenceRef.current = []
+    predictionHistoryRef.current = []
+    syncModelUi(baseModel, "사용자 추가 라벨과 샘플을 초기화했습니다.")
+  }, [syncModelUi])
 
   const updateStablePrediction = useCallback((prediction: SignPrediction, now: number) => {
     if (prediction.confidence < 0.58 || prediction.label === "대기" || prediction.label === "버퍼링") {
@@ -624,7 +714,7 @@ export function SignTextExperience() {
             </div>
           </section>
 
-          <aside className="grid min-h-0 gap-4 lg:grid-rows-[auto_auto_minmax(0,1fr)]">
+          <aside className="grid min-h-0 gap-4 lg:grid-rows-[auto_auto_auto_minmax(0,1fr)]">
             <Panel>
               <div className="flex items-start justify-between gap-4">
                 <div>
@@ -646,8 +736,8 @@ export function SignTextExperience() {
                 <h2 className="text-sm font-semibold">빠른 테스트</h2>
                 <Captions className="h-4 w-4 text-foreground/54" />
               </div>
-              <div className="grid grid-cols-2 gap-2">
-                {SAMPLE_TOKENS.map((sample) => (
+              <div className="grid max-h-36 grid-cols-2 gap-2 overflow-y-auto pr-1">
+                {availableLabels.map((sample) => (
                   <button
                     key={sample}
                     onClick={() => emitToken(sample, 0.96, expressionRef.current)}
@@ -665,6 +755,69 @@ export function SignTextExperience() {
                 <button onClick={clearAll} className="inline-flex items-center justify-center gap-2 rounded-lg border border-foreground/10 bg-background/18 px-3 py-2 text-xs text-foreground/76 transition hover:bg-foreground/10">
                   <Trash2 className="h-3.5 w-3.5" />
                   지우기
+                </button>
+              </div>
+            </Panel>
+
+            <Panel>
+              <div className="mb-3 flex items-start justify-between gap-4">
+                <div>
+                  <p className="text-xs text-foreground/48">브라우저 학습</p>
+                  <h2 className="mt-1 text-lg font-semibold">라벨 추가 · 샘플 학습</h2>
+                </div>
+                <Database className="h-5 w-5 text-foreground/58" />
+              </div>
+
+              <div className="grid gap-2">
+                <div className="flex gap-2">
+                  <input
+                    value={trainingLabel}
+                    onChange={(event) => setTrainingLabel(event.target.value)}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter") addTrainingLabel()
+                    }}
+                    placeholder="예: 도와주세요"
+                    className="min-w-0 flex-1 rounded-lg border border-foreground/10 bg-background/24 px-3 py-2 text-sm text-foreground outline-none transition placeholder:text-foreground/32 focus:border-foreground/32"
+                  />
+                  <button onClick={addTrainingLabel} className="inline-flex items-center justify-center gap-2 rounded-lg border border-foreground/12 bg-foreground/10 px-3 py-2 text-xs font-medium text-foreground/82 transition hover:bg-foreground/16">
+                    <Plus className="h-3.5 w-3.5" />
+                    추가
+                  </button>
+                </div>
+
+                <select
+                  value={selectedTrainingLabel}
+                  onChange={(event) => setSelectedTrainingLabel(event.target.value)}
+                  className="h-10 rounded-lg border border-foreground/10 bg-background/24 px-3 text-sm text-foreground outline-none transition focus:border-foreground/32"
+                >
+                  {availableLabels.map((label) => (
+                    <option key={label} value={label} className="bg-background text-foreground">
+                      {label}
+                    </option>
+                  ))}
+                </select>
+
+                <button onClick={captureTrainingSample} className="inline-flex h-10 items-center justify-center gap-2 rounded-lg border border-foreground/16 bg-foreground/14 px-3 text-sm font-semibold text-foreground transition hover:bg-foreground/20">
+                  <BadgeCheck className="h-4 w-4" />
+                  현재 동작 샘플 학습
+                </button>
+              </div>
+
+              <p className="mt-3 text-xs leading-relaxed text-foreground/58">{trainingMessage}</p>
+
+              <div className="mt-3 flex flex-wrap gap-2">
+                {labelCounts.map((item) => (
+                  <span key={item.label} className={`rounded-lg border px-2.5 py-1.5 text-[11px] ${item.label === selectedTrainingLabel ? "border-foreground/30 bg-foreground/14 text-foreground" : "border-foreground/10 bg-background/18 text-foreground/62"}`}>
+                    {item.label} · {item.count}
+                  </span>
+                ))}
+              </div>
+
+              <div className="mt-3 flex items-center justify-between gap-3 border-t border-foreground/10 pt-3 text-xs text-foreground/52">
+                <span>사용자 샘플 {customTrainingCount}개</span>
+                <button onClick={resetCustomTraining} className="inline-flex items-center gap-1.5 text-foreground/58 transition hover:text-foreground">
+                  <Trash2 className="h-3.5 w-3.5" />
+                  사용자 학습 초기화
                 </button>
               </div>
             </Panel>

@@ -36,6 +36,18 @@ export type BrowserKnnModel = {
   sampleLabels: string[]
 }
 
+export type BrowserKnnCustomTraining = {
+  version: number
+  sequenceLength: number
+  featureSize: number
+  flatFeatureSize: number
+  labels: string[]
+  samples: number[][]
+  sampleLabels: string[]
+  createdAt: string
+  updatedAt: string
+}
+
 export type SignPrediction = {
   label: string
   confidence: number
@@ -72,13 +84,118 @@ const EMPTY_FACE_EXPRESSION: FaceExpression = {
 }
 
 const SIGN_POSE_INDICES = [11, 12, 13, 14, 15, 16]
+const CUSTOM_TRAINING_STORAGE_KEY = "gesture-bridge.sign-text.custom-training.v1"
+const CUSTOM_TRAINING_MAX_SAMPLES = 120
 
-export async function loadBrowserKnnModel(path = "/models/sign_knn.browser.json") {
+export async function loadBaseBrowserKnnModel(path = "/models/sign_knn.browser.json") {
   const response = await fetch(path)
   if (!response.ok) {
     throw new Error(`Failed to load sign model: ${response.status}`)
   }
   return (await response.json()) as BrowserKnnModel
+}
+
+export async function loadBrowserKnnModel(path = "/models/sign_knn.browser.json") {
+  const baseModel = await loadBaseBrowserKnnModel(path)
+  return loadStoredBrowserKnnModel(baseModel)
+}
+
+export function loadStoredBrowserKnnModel(baseModel: BrowserKnnModel) {
+  const custom = readBrowserKnnCustomTraining(baseModel)
+  if (!custom) return baseModel
+
+  const labels = uniqueLabels([...baseModel.labels, ...custom.labels, ...custom.sampleLabels])
+  const classes = uniqueLabels([...baseModel.classes, ...labels])
+  return {
+    ...baseModel,
+    labels,
+    classes,
+    samples: [...baseModel.samples, ...custom.samples],
+    sampleLabels: [...baseModel.sampleLabels, ...custom.sampleLabels],
+  }
+}
+
+export function readBrowserKnnCustomTraining(baseModel?: BrowserKnnModel | null): BrowserKnnCustomTraining | null {
+  if (typeof window === "undefined") return null
+  const raw = window.localStorage.getItem(CUSTOM_TRAINING_STORAGE_KEY)
+  if (!raw) return null
+
+  try {
+    const payload = JSON.parse(raw) as BrowserKnnCustomTraining
+    if (!isCustomTrainingPayload(payload)) return null
+    if (baseModel && !isCustomTrainingCompatible(baseModel, payload)) return null
+    return payload
+  } catch {
+    return null
+  }
+}
+
+export function addBrowserKnnCustomLabel(baseModel: BrowserKnnModel, label: string) {
+  const normalizedLabel = normalizeBrowserKnnLabel(label)
+  if (!normalizedLabel) {
+    throw new Error("라벨 이름을 입력하세요.")
+  }
+
+  const custom = readBrowserKnnCustomTraining(baseModel) ?? createEmptyCustomTraining(baseModel)
+  const now = new Date().toISOString()
+  const nextCustom: BrowserKnnCustomTraining = {
+    ...custom,
+    labels: uniqueLabels([...custom.labels, normalizedLabel]),
+    updatedAt: now,
+  }
+  writeBrowserKnnCustomTraining(nextCustom)
+  return loadStoredBrowserKnnModel(baseModel)
+}
+
+export function addBrowserKnnTrainingSample(baseModel: BrowserKnnModel, label: string, sequence: number[][]) {
+  const normalizedLabel = normalizeBrowserKnnLabel(label)
+  if (!normalizedLabel) {
+    throw new Error("라벨 이름을 입력하세요.")
+  }
+  if (sequence.length < baseModel.sequenceLength) {
+    throw new Error(`샘플이 부족합니다. ${baseModel.sequenceLength}프레임이 필요합니다.`)
+  }
+
+  const frames = sequence.slice(-baseModel.sequenceLength)
+  frames.forEach((frame) => {
+    if (frame.length !== baseModel.featureSize) {
+      throw new Error(`샘플 프레임 크기가 다릅니다. ${baseModel.featureSize}개 특징이 필요합니다.`)
+    }
+  })
+
+  const flat = frames.flat()
+  if (flat.length !== baseModel.flatFeatureSize) {
+    throw new Error(`샘플 특징 크기가 다릅니다. ${baseModel.flatFeatureSize}개 특징이 필요합니다.`)
+  }
+
+  const scaled = flat.map((value, index) => (value - baseModel.scalerMean[index]) / safeScale(baseModel.scalerScale[index]))
+  const custom = readBrowserKnnCustomTraining(baseModel) ?? createEmptyCustomTraining(baseModel)
+  const now = new Date().toISOString()
+  const nextCustom: BrowserKnnCustomTraining = {
+    ...custom,
+    labels: uniqueLabels([...custom.labels, normalizedLabel]),
+    samples: [...custom.samples, scaled].slice(-CUSTOM_TRAINING_MAX_SAMPLES),
+    sampleLabels: [...custom.sampleLabels, normalizedLabel].slice(-CUSTOM_TRAINING_MAX_SAMPLES),
+    updatedAt: now,
+  }
+  writeBrowserKnnCustomTraining(nextCustom)
+  return loadStoredBrowserKnnModel(baseModel)
+}
+
+export function clearBrowserKnnCustomTraining() {
+  if (typeof window === "undefined") return
+  window.localStorage.removeItem(CUSTOM_TRAINING_STORAGE_KEY)
+}
+
+export function getBrowserKnnLabelCounts(model: BrowserKnnModel) {
+  const counts = new Map<string, number>()
+  model.labels.forEach((label) => counts.set(label, 0))
+  model.sampleLabels.forEach((label) => counts.set(label, (counts.get(label) ?? 0) + 1))
+  return model.labels.map((label) => ({ label, count: counts.get(label) ?? 0 }))
+}
+
+export function normalizeBrowserKnnLabel(value: string) {
+  return value.trim().replace(/\s+/g, "_").replace(/^_+|_+$/g, "")
 }
 
 export function flattenHolisticFrameFeatures(input: HolisticFeatureInput) {
@@ -256,6 +373,52 @@ function euclideanDistance(left: number[], right: number[]) {
 
 function safeScale(value: number) {
   return Math.abs(value) > 1e-12 ? value : 1
+}
+
+function createEmptyCustomTraining(baseModel: BrowserKnnModel): BrowserKnnCustomTraining {
+  const now = new Date().toISOString()
+  return {
+    version: 1,
+    sequenceLength: baseModel.sequenceLength,
+    featureSize: baseModel.featureSize,
+    flatFeatureSize: baseModel.flatFeatureSize,
+    labels: [],
+    samples: [],
+    sampleLabels: [],
+    createdAt: now,
+    updatedAt: now,
+  }
+}
+
+function writeBrowserKnnCustomTraining(payload: BrowserKnnCustomTraining) {
+  if (typeof window === "undefined") return
+  window.localStorage.setItem(CUSTOM_TRAINING_STORAGE_KEY, JSON.stringify(payload))
+}
+
+function isCustomTrainingPayload(payload: BrowserKnnCustomTraining) {
+  return (
+    payload?.version === 1 &&
+    Number.isFinite(payload.sequenceLength) &&
+    Number.isFinite(payload.featureSize) &&
+    Number.isFinite(payload.flatFeatureSize) &&
+    Array.isArray(payload.labels) &&
+    Array.isArray(payload.samples) &&
+    Array.isArray(payload.sampleLabels) &&
+    payload.samples.length === payload.sampleLabels.length
+  )
+}
+
+function isCustomTrainingCompatible(baseModel: BrowserKnnModel, payload: BrowserKnnCustomTraining) {
+  return (
+    payload.sequenceLength === baseModel.sequenceLength &&
+    payload.featureSize === baseModel.featureSize &&
+    payload.flatFeatureSize === baseModel.flatFeatureSize &&
+    payload.samples.every((sample) => Array.isArray(sample) && sample.length === baseModel.flatFeatureSize)
+  )
+}
+
+function uniqueLabels(labels: string[]) {
+  return Array.from(new Set(labels.map(normalizeBrowserKnnLabel).filter(Boolean)))
 }
 
 function score(scores: Map<string, number>, key: string) {
