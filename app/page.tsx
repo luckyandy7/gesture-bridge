@@ -3,14 +3,14 @@
 import Image from "next/image"
 import Link from "next/link"
 import { useEffect, useRef, useState } from "react"
+import { Shader, ChromaFlow, Swirl } from "shaders/react"
 import {
   Activity,
   Camera,
   ChevronRight,
   Copy,
-  Hand,
   Keyboard,
-  MousePointer2,
+  MousePointerClick,
   ShieldCheck,
   Sparkles,
   Subtitles,
@@ -31,7 +31,7 @@ const modes: Record<
     label: string
     description: string
     image: string
-    icon: typeof MousePointer2
+    brandIcon: string
     primaryCommand: string
     secondaryCommand: string
     facts: string[]
@@ -43,25 +43,23 @@ const modes: Record<
     label: "손동작으로 화면 조작",
     description: "한 손의 정적인 제스처를 빠르게 판정해서 마우스 이동, 클릭, 스크롤, 슬라이드 넘기기로 연결합니다.",
     image: "/gesture-control-mode.png",
-    icon: MousePointer2,
-    primaryCommand: "PYTHONPATH=src python -m gesture_bridge pc-control --live",
-    secondaryCommand: "PYTHONPATH=src python -m gesture_bridge pc-control",
-    facts: ["검지만 펴기: 커서 이동", "엄지+검지 붙이기: 클릭", "브이: 다음 슬라이드", "엄지 위/아래: 스크롤"],
-    steps: ["카메라에서 손 1개 추적", "규칙 기반 제스처 판정", "안정화와 쿨다운 적용", "OS 입력 어댑터로 실행"],
+    brandIcon: "/brand/mode-pc-control-512.png",
+    primaryCommand: "/pc-control",
+    secondaryCommand: "PYTHONPATH=src python -m gesture_bridge pc-control --live",
+    facts: ["웹 실행", "검지만 펴기: 커서 이동", "엄지+검지 붙이기: 클릭", "브이: 다음 슬라이드", "엄지 위/아래: 스크롤"],
+    steps: ["브라우저에서 카메라 권한 허용", "MediaPipe Hands로 손 1개 추적", "Python과 같은 제스처 매핑 적용", "브라우저 내부 데스크톱 조작"],
   },
   "sign-text": {
     title: "수화 문장",
-    label: "양손과 팔 동작을 한국어 문장으로",
+    label: "손과 얼굴 표정을 한국어 음성으로",
     description:
-      "양손과 팔 포즈로 gloss 토큰을 인식한 뒤, GKSL 문장 메모리와 규칙 기반 fallback을 거쳐 최종 한국어 문장으로 출력합니다.",
+      "웹에서 손, 팔, 얼굴 표정을 함께 추적하고 gloss 토큰을 누적한 뒤, 문장 끝 신호에서 자연스러운 한국어 문장과 음성으로 출력합니다.",
     image: "/sign-text-mode.png",
-    icon: Subtitles,
-    primaryCommand:
-      "PYTHONPATH=src python -m gesture_bridge sign-text --labels-config configs/korean_sentence_gloss_labels.example.json",
-    secondaryCommand:
-      "PYTHONPATH=src python -m gesture_bridge sign-text --labels-config configs/korean_sign_labels.example.json --output-mode words",
-    facts: ["문장 출력 기본값", "단어 출력 백업 가능", "GKSL 15K 문장 메모리", "exact/fuzzy 매칭"],
-    steps: ["양손 + 어깨/팔꿈치/손목 추적", "30프레임 gloss 토큰 분류", "안정화된 토큰을 문장 조립기로 전달", "한국어 문장 후보 출력"],
+    brandIcon: "/brand/mode-sign-sentence-512.png",
+    primaryCommand: "/sign-text",
+    secondaryCommand: "웹캠 권한 허용 후 수화 단어를 순서대로 입력",
+    facts: ["웹 실행", "얼굴 표정 반영", "단어별 정확도", "문장 끝 신호", "보이스 출력"],
+    steps: ["브라우저에서 손 + 얼굴 + 팔 포즈 추적", "30프레임 gloss 토큰 분류", "단어와 정확도를 하단 자막으로 누적", "문장 끝 신호에서 한국어 문장과 음성 출력"],
   },
   interactive: {
     title: "인터랙티브 체험",
@@ -69,7 +67,7 @@ const modes: Record<
     description:
       "웹캠 손 추적과 한국어 음성 명령으로 사진, 그림, 날씨, 시각 효과, 미니게임, 음악, 3D 오브젝트를 한 화면에서 제어합니다.",
     image: "/interactive-experience-mode.png",
-    icon: Sparkles,
+    brandIcon: "/brand/mode-interactive-stage-512.png",
     primaryCommand: "/interactive",
     secondaryCommand: "음성 예시: “날씨 알려줘”, “그림 그리기 시작”, “게임 시작”",
     facts: ["사진 이동/확대", "공중 드로잉", "날씨 패널", "효과 콤보", "미니게임 9종", "3D·음악 제어"],
@@ -82,18 +80,37 @@ export default function Home() {
   const scrollThrottleRef = useRef<number | null>(null)
   const touchStartY = useRef(0)
   const touchStartX = useRef(0)
+  const shaderContainerRef = useRef<HTMLDivElement>(null)
   const [currentSection, setCurrentSection] = useState(0)
   const [selectedMode, setSelectedMode] = useState<ModeKey>("pc-control")
-  const [isLoaded, setIsLoaded] = useState(false)
+  const [isLoaded, setIsLoaded] = useState(true)
   const [copiedCommand, setCopiedCommand] = useState("")
 
   useEffect(() => {
-    const frame = requestAnimationFrame(() => {
+    const checkShaderReady = () => {
+      const canvas = shaderContainerRef.current?.querySelector("canvas")
+      if (canvas && canvas.width > 0 && canvas.height > 0) {
+        setIsLoaded(true)
+        return true
+      }
+      return false
+    }
+
+    if (checkShaderReady()) return
+
+    const intervalId = window.setInterval(() => {
+      if (checkShaderReady()) {
+        window.clearInterval(intervalId)
+      }
+    }, 100)
+
+    const fallbackTimer = window.setTimeout(() => {
       setIsLoaded(true)
-    })
+    }, 1500)
 
     return () => {
-      cancelAnimationFrame(frame)
+      window.clearInterval(intervalId)
+      window.clearTimeout(fallbackTimer)
     }
   }, [])
 
@@ -245,20 +262,45 @@ export default function Home() {
       <GrainOverlay />
 
       <div
+        ref={shaderContainerRef}
         className={`fixed inset-0 z-0 transition-opacity duration-700 ${isLoaded ? "opacity-100" : "opacity-0"}`}
         style={{ contain: "strict" }}
       >
-        <Image
-          src="/interactive-experience-mode.png"
-          alt=""
-          aria-hidden="true"
-          fill
-          priority
-          sizes="100vw"
-          className="scale-105 object-cover opacity-28 blur-sm saturate-[0.8]"
+        <Shader className="h-full w-full">
+          <Swirl
+            colorA="#1275d8"
+            colorB="#e19136"
+            speed={0.8}
+            detail={0.8}
+            blend={50}
+            coarseX={40}
+            coarseY={40}
+            mediumX={40}
+            mediumY={40}
+            fineX={40}
+            fineY={40}
+          />
+          <ChromaFlow
+            baseColor="#0066ff"
+            upColor="#0066ff"
+            downColor="#d1d1d1"
+            leftColor="#e19136"
+            rightColor="#e19136"
+            intensity={0.9}
+            radius={1.8}
+            momentum={25}
+            maskType="alpha"
+            opacity={0.97}
+          />
+        </Shader>
+        <div
+          className="absolute inset-0 opacity-85 mix-blend-screen"
+          style={{
+            backgroundImage:
+              "radial-gradient(circle at 20% 24%, rgba(18, 117, 216, 0.78), transparent 34%), radial-gradient(circle at 78% 38%, rgba(225, 145, 54, 0.72), transparent 32%), linear-gradient(120deg, rgba(0, 102, 255, 0.42), rgba(209, 209, 209, 0.18) 46%, rgba(225, 145, 54, 0.5))",
+          }}
         />
-        <div className="absolute inset-0 bg-black/60" />
-        <div className="absolute inset-0 bg-[linear-gradient(115deg,rgba(6,48,71,0.34),transparent_45%,rgba(31,63,57,0.28))]" />
+        <div className="absolute inset-0 bg-black/20" />
       </div>
 
       <nav
@@ -272,7 +314,14 @@ export default function Home() {
           aria-label="Gesture Bridge 홈으로 이동"
         >
           <div className="grid h-10 w-10 place-items-center rounded-lg border border-foreground/10 bg-foreground/10 backdrop-blur-md">
-            <Hand className="h-5 w-5 text-foreground" />
+            <Image
+              src="/brand/gesture-bridge-mark-512.png"
+              alt=""
+              width={40}
+              height={40}
+              priority
+              className="h-9 w-9 object-contain drop-shadow-[0_0_10px_rgba(225,145,54,0.34)]"
+            />
           </div>
           <span className="font-sans text-lg font-semibold tracking-tight text-foreground md:text-xl">Gesture Bridge</span>
         </button>
@@ -327,9 +376,20 @@ export default function Home() {
                 <MagneticButton size="lg" variant="primary" onClick={() => chooseMode("pc-control")}>
                   PC 제어 선택
                 </MagneticButton>
-                <MagneticButton size="lg" variant="secondary" onClick={() => chooseMode("sign-text")}>
-                  수화 텍스트 선택
-                </MagneticButton>
+                <Link
+                  href="/pc-control"
+                  className="inline-flex min-h-12 items-center gap-2 rounded-lg border border-foreground/16 bg-foreground px-6 py-3 text-sm font-semibold text-background transition hover:scale-[1.02] hover:bg-foreground/90"
+                >
+                  <MousePointerClick className="h-4 w-4" />
+                  PC 제어 실행
+                </Link>
+                <Link
+                  href="/sign-text"
+                  className="inline-flex min-h-12 items-center gap-2 rounded-lg border border-foreground/16 bg-foreground/5 px-6 py-3 text-sm font-semibold text-foreground backdrop-blur-xl transition hover:scale-[1.02] hover:bg-foreground/10"
+                >
+                  <Subtitles className="h-4 w-4" />
+                  수화 텍스트 실행
+                </Link>
                 <Link
                   href="/interactive"
                   className="inline-flex min-h-12 items-center gap-2 rounded-lg border border-foreground/16 bg-foreground px-6 py-3 text-sm font-semibold text-background transition hover:scale-[1.02] hover:bg-foreground/90"
@@ -384,7 +444,7 @@ export default function Home() {
                 확인할 것
               </h2>
               <p className="mt-5 max-w-lg text-base leading-relaxed text-foreground/82 md:text-lg">
-                프론트는 모드 선택과 실행 흐름을 분리해서 보여주고, 실제 카메라 런타임은 기존 Python 명령으로 실행합니다.
+                웹 실행 모드는 브라우저에서 바로 열고, 실제 OS 전역 입력은 Python live 명령으로 분리해서 실행합니다.
               </p>
             </div>
 
@@ -439,7 +499,6 @@ function ModeChoiceCard({
   onSelect: () => void
 }) {
   const mode = modes[modeKey]
-  const Icon = mode.icon
 
   return (
     <button
@@ -461,7 +520,13 @@ function ModeChoiceCard({
         />
         <div className="absolute inset-0 bg-gradient-to-t from-black/62 via-black/10 to-transparent" />
         <div className="absolute bottom-4 left-4 grid h-10 w-10 place-items-center rounded-lg border border-white/15 bg-black/30 backdrop-blur-md">
-          <Icon className="h-5 w-5 text-white" />
+          <Image
+            src={mode.brandIcon}
+            alt=""
+            width={48}
+            height={48}
+            className="h-10 w-10 object-contain drop-shadow-[0_0_10px_rgba(225,145,54,0.42)]"
+          />
         </div>
       </div>
       <div className="p-4 md:p-5">
@@ -492,7 +557,6 @@ function ModeDetailSection({
   reverse?: boolean
 }) {
   const mode = modes[modeKey]
-  const Icon = mode.icon
 
   return (
     <section className="flex h-screen w-screen shrink-0 items-center px-5 pt-20 md:px-10 md:pt-0 lg:px-16">
@@ -502,14 +566,12 @@ function ModeDetailSection({
         }`}
       >
         <div className="relative min-w-0 overflow-hidden rounded-lg border border-foreground/12 bg-foreground/8 shadow-2xl shadow-black/20">
-          <div className="relative aspect-[16/10]">
-            <Image
-              src={mode.image}
-              alt={`${mode.title} 상세 이미지`}
-              fill
-              sizes="(max-width: 1024px) 100vw, 50vw"
-              className="object-cover"
-            />
+          <div className="relative aspect-[16/10] overflow-hidden bg-[radial-gradient(circle_at_24%_24%,rgba(18,117,216,0.34),transparent_32%),radial-gradient(circle_at_78%_48%,rgba(225,145,54,0.28),transparent_30%),linear-gradient(135deg,rgba(6,8,18,0.94),rgba(4,10,24,0.98))]">
+            <div className="absolute inset-0 bg-[linear-gradient(rgba(255,255,255,0.055)_1px,transparent_1px),linear-gradient(90deg,rgba(255,255,255,0.045)_1px,transparent_1px)] bg-[size:54px_54px] opacity-30" />
+            <div className="absolute left-8 top-8 h-20 w-20 rounded-full border border-white/12" />
+            <div className="absolute right-12 top-12 h-28 w-44 rounded-lg border border-white/12 bg-white/6 backdrop-blur-md" />
+            <div className="absolute bottom-20 right-24 h-px w-48 bg-[linear-gradient(90deg,transparent,rgba(255,255,255,0.42),transparent)]" />
+            <div className="absolute bottom-24 right-20 h-2 w-2 rounded-full bg-white/60 shadow-[0_0_28px_rgba(255,255,255,0.55)]" />
             <div className="absolute inset-0 bg-gradient-to-t from-black/68 via-black/5 to-transparent" />
           </div>
           <div className="absolute bottom-5 left-5 right-5 flex items-end justify-between gap-4">
@@ -518,7 +580,13 @@ function ModeDetailSection({
               <h2 className="mt-1 font-sans text-3xl font-light tracking-tight text-white md:text-5xl">{mode.title}</h2>
             </div>
             <div className="grid h-12 w-12 shrink-0 place-items-center rounded-lg border border-white/14 bg-black/28 backdrop-blur-md">
-              <Icon className="h-6 w-6 text-white" />
+              <Image
+                src={mode.brandIcon}
+                alt=""
+                width={56}
+                height={56}
+                className="h-11 w-11 object-contain drop-shadow-[0_0_12px_rgba(225,145,54,0.44)]"
+              />
             </div>
           </div>
         </div>
@@ -548,23 +616,51 @@ function ModeDetailSection({
             ))}
           </div>
 
-          <div className="mt-7 space-y-3">
-            <CommandBlock
-              label={modeKey === "pc-control" ? "실제 제어" : modeKey === "interactive" ? "웹 체험 경로" : "실시간 추론"}
-              command={mode.primaryCommand}
-              copied={copiedCommand === mode.primaryCommand}
-              copyCommand={copyCommand}
-            />
-            <CommandBlock
-              label={modeKey === "pc-control" ? "드라이런" : modeKey === "interactive" ? "한국어 명령" : "모델 학습"}
-              command={mode.secondaryCommand}
-              copied={copiedCommand === mode.secondaryCommand}
-              copyCommand={copyCommand}
-            />
-          </div>
+          {modeKey === "sign-text" ? (
+            <div className="mt-7 rounded-lg border border-foreground/12 bg-black/24 p-4 backdrop-blur-md">
+              <div className="flex items-center gap-3">
+                <div className="grid h-10 w-10 shrink-0 place-items-center rounded-lg bg-foreground/10">
+                  <Subtitles className="h-5 w-5 text-foreground/78" />
+                </div>
+                <div className="min-w-0">
+                  <p className="font-mono text-xs text-foreground/52">웹 실행 경로</p>
+                  <p className="mt-1 truncate text-sm text-foreground/86">/sign-text · 카메라에서 바로 수화 텍스트 실행</p>
+                </div>
+              </div>
+            </div>
+          ) : (
+            <div className="mt-7 space-y-3">
+              <CommandBlock
+                label={modeKey === "pc-control" ? "웹 실행 경로" : "웹 체험 경로"}
+                command={mode.primaryCommand}
+                copied={copiedCommand === mode.primaryCommand}
+                copyCommand={copyCommand}
+              />
+              <CommandBlock
+                label={modeKey === "pc-control" ? "OS live 명령" : "한국어 명령"}
+                command={mode.secondaryCommand}
+                copied={copiedCommand === mode.secondaryCommand}
+                copyCommand={copyCommand}
+              />
+            </div>
+          )}
 
           <div className="mt-7 flex flex-wrap gap-3">
-            {modeKey === "interactive" ? (
+            {modeKey === "pc-control" ? (
+              <Link
+                href="/pc-control"
+                className="inline-flex min-h-11 items-center justify-center rounded-lg bg-foreground px-5 py-3 text-sm font-semibold text-background transition hover:scale-[1.02] hover:bg-foreground/90"
+              >
+                PC 제어 웹 실행
+              </Link>
+            ) : modeKey === "sign-text" ? (
+              <Link
+                href="/sign-text"
+                className="inline-flex min-h-11 items-center justify-center rounded-lg bg-foreground px-5 py-3 text-sm font-semibold text-background transition hover:scale-[1.02] hover:bg-foreground/90"
+              >
+                수화 텍스트 웹 실행
+              </Link>
+            ) : modeKey === "interactive" ? (
               <Link
                 href="/interactive"
                 className="inline-flex min-h-11 items-center justify-center rounded-lg bg-foreground px-5 py-3 text-sm font-semibold text-background transition hover:scale-[1.02] hover:bg-foreground/90"

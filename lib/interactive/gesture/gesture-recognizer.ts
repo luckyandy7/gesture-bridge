@@ -29,7 +29,9 @@ export const GESTURE_LABELS: Record<GestureName, string> = {
   pinch: "집기",
   point: "가리키기",
   peace: "두 손가락",
+  cross: "손가락 교차",
   thumbs_up: "엄지 위",
+  thumbs_down: "엄지 아래",
   two_hands_together: "양손 모으기",
   two_hands_spread: "양손 펼치기",
   swipe_left: "왼쪽 넘기기",
@@ -105,17 +107,24 @@ function recognizeHand(landmarks: NormalizedLandmark[], handedness: TrackedHand[
   const indexTip = landmarks[8]
   const middleMcp = landmarks[9]
   const palmSize = Math.max(distance(wrist, middleMcp), 0.035)
+  const palmCenter = averagePoint([landmarks[0], landmarks[5], landmarks[9], landmarks[13], landmarks[17]])
   const pinchDistance = distance(landmarks[4], indexTip)
   const pinchStrength = clamp(1 - pinchDistance / (palmSize * 0.9), 0, 1)
   const fingers = {
-    thumb: distance(landmarks[4], wrist) > distance(landmarks[3], wrist) * 1.08,
-    index: isFingerExtended(landmarks, 8, 6),
-    middle: isFingerExtended(landmarks, 12, 10),
-    ring: isFingerExtended(landmarks, 16, 14),
-    pinky: isFingerExtended(landmarks, 20, 18),
+    thumb: isThumbExtended(landmarks, palmCenter),
+    index: isFingerExtended(landmarks, 8, 7, 6, 5, palmCenter, palmSize),
+    middle: isFingerExtended(landmarks, 12, 11, 10, 9, palmCenter, palmSize),
+    ring: isFingerExtended(landmarks, 16, 15, 14, 13, palmCenter, palmSize),
+    pinky: isFingerExtended(landmarks, 20, 19, 18, 17, palmCenter, palmSize),
   }
   const extendedCount = [fingers.index, fingers.middle, fingers.ring, fingers.pinky].filter(Boolean).length
-  const gesture = classifyGesture(fingers, extendedCount, pinchDistance, palmSize)
+  const indexMiddleCrossed =
+    fingers.index &&
+    fingers.middle &&
+    !fingers.ring &&
+    !fingers.pinky &&
+    distance(landmarks[8], landmarks[12]) < palmSize * 0.42
+  const gesture = classifyGesture(fingers, extendedCount, pinchDistance, palmSize, indexMiddleCrossed, wrist, landmarks[4])
   const center = averagePoint([landmarks[0], landmarks[5], landmarks[9], landmarks[13], landmarks[17]])
 
   return {
@@ -138,23 +147,68 @@ function classifyGesture(
   extendedCount: number,
   pinchDistance: number,
   palmSize: number,
+  indexMiddleCrossed: boolean,
+  wrist: NormalizedLandmark,
+  thumbTip: NormalizedLandmark,
 ): GestureName {
-  if (pinchDistance < palmSize * 0.38) return "pinch"
-  if (extendedCount >= 4) return "open_palm"
+  if ((pinchDistance < palmSize * 0.48 && fingers.index) || pinchDistance < palmSize * 0.32) return "pinch"
+  if (indexMiddleCrossed) return "cross"
+  if (extendedCount >= 3) return "open_palm"
   if (extendedCount === 0 && !fingers.thumb) return "fist"
-  if (fingers.thumb && extendedCount === 0) return "thumbs_up"
+  if (fingers.thumb && extendedCount === 0) {
+    const verticalDelta = thumbTip.y - wrist.y
+    if (verticalDelta > palmSize * 0.28) return "thumbs_down"
+    return "thumbs_up"
+  }
   if (fingers.index && fingers.middle && !fingers.ring && !fingers.pinky) return "peace"
   if (fingers.index && !fingers.middle && !fingers.ring && !fingers.pinky) return "point"
   return "none"
 }
 
-function isFingerExtended(landmarks: NormalizedLandmark[], tipIndex: number, pipIndex: number) {
+function isFingerExtended(
+  landmarks: NormalizedLandmark[],
+  tipIndex: number,
+  dipIndex: number,
+  pipIndex: number,
+  mcpIndex: number,
+  palmCenter: Point,
+  palmSize: number,
+) {
   const tip = landmarks[tipIndex]
+  const dip = landmarks[dipIndex]
   const pip = landmarks[pipIndex]
-  const mcp = landmarks[Math.max(pipIndex - 1, 0)]
-  const verticalExtended = tip.y < pip.y - 0.015
-  const radialExtended = distance(tip, mcp) > distance(pip, mcp) * 1.08
-  return verticalExtended || radialExtended
+  const mcp = landmarks[mcpIndex]
+  const reachFromMcp = distance(tip, mcp)
+  const pipReachFromMcp = distance(pip, mcp)
+  const tipPalmDistance = distance(tip, palmCenter)
+  const pipPalmDistance = distance(pip, palmCenter)
+  const straightness = cosine(
+    { x: pip.x - mcp.x, y: pip.y - mcp.y },
+    { x: tip.x - pip.x, y: tip.y - pip.y },
+  )
+  const distalStraightness = cosine(
+    { x: dip.x - pip.x, y: dip.y - pip.y },
+    { x: tip.x - dip.x, y: tip.y - dip.y },
+  )
+  const extendedByReach = reachFromMcp > pipReachFromMcp * 1.18 && tipPalmDistance > pipPalmDistance * 1.02
+  const extendedByLength = reachFromMcp > palmSize * 1.08 && tipPalmDistance > palmSize * 0.72
+  return (straightness > 0.18 && distalStraightness > 0.2 && extendedByReach) || extendedByLength
+}
+
+function isThumbExtended(landmarks: NormalizedLandmark[], palmCenter: Point) {
+  const tip = landmarks[4]
+  const ip = landmarks[3]
+  const mcp = landmarks[2]
+  const cmc = landmarks[1]
+  const tipPalmDistance = distance(tip, palmCenter)
+  const ipPalmDistance = distance(ip, palmCenter)
+  const reachFromCmc = distance(tip, cmc)
+  const ipReachFromCmc = distance(ip, cmc)
+  const straightness = cosine(
+    { x: mcp.x - cmc.x, y: mcp.y - cmc.y },
+    { x: tip.x - mcp.x, y: tip.y - mcp.y },
+  )
+  return tipPalmDistance > ipPalmDistance * 1.08 && reachFromCmc > ipReachFromCmc * 1.08 && straightness > -0.15
 }
 
 function detectSwipe(history: GestureHistoryFrame[]) {
@@ -177,11 +231,13 @@ function chooseDominantGesture(gestures: GestureName[], primary: GestureName): G
     "swipe_right",
     "swipe_left",
     "pinch",
+    "cross",
     "open_palm",
     "fist",
     "point",
     "peace",
     "thumbs_up",
+    "thumbs_down",
   ]
   return priority.find((gesture) => gestures.includes(gesture)) ?? primary
 }
@@ -206,6 +262,12 @@ function averagePoint(points: Point[]): Point {
 
 function distance(a: Point, b: Point) {
   return Math.hypot(a.x - b.x, a.y - b.y)
+}
+
+function cosine(a: Point, b: Point) {
+  const denominator = Math.hypot(a.x, a.y) * Math.hypot(b.x, b.y)
+  if (denominator < 1e-6) return 0
+  return (a.x * b.x + a.y * b.y) / denominator
 }
 
 function clamp(value: number, min: number, max: number) {

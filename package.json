@@ -54,6 +54,7 @@
     "react-hook-form": "^7.60.0",
     "react-resizable-panels": "^2.1.7",
     "recharts": "2.15.4",
+    "shaders": "2.1.1",
     "sonner": "^1.7.4",
     "tailwind-merge": "^3.3.1",
     "three": "^0.184.0",
@@ -62,6 +63,7 @@
   },
   "devDependencies": {
     "@eslint/eslintrc": "^3.3.5",
+    "@next/eslint-plugin-next": "15.5.18",
     "@playwright/test": "^1.60.0",
     "@tailwindcss/postcss": "^4.1.9",
     "@types/node": "^22",
@@ -70,6 +72,7 @@
     "@types/three": "^0.184.1",
     "eslint": "^9.39.4",
     "eslint-config-next": "^15.5.18",
+    "eslint-plugin-react-hooks": "5.2.0",
     "playwright": "^1.60.0",
     "postcss": "^8.5",
     "tailwindcss": "^4.1.9",

@@ -4,6 +4,8 @@ const MODE_KEYWORDS: Array<{ mode: InteractiveMode; words: string[]; feedback: s
   { mode: "home", words: ["홈", "처음", "메인"], feedback: "홈 모드로 전환합니다." },
   { mode: "image", words: ["사진 모드", "이미지 모드", "사진"], feedback: "사진 모드로 전환합니다." },
   { mode: "drawing", words: ["그림 모드", "드로잉 모드", "그림 그리기"], feedback: "그림 모드로 전환합니다." },
+  { mode: "satoru", words: ["술식 모드", "사토루", "sat0ru", "결계", "영역"], feedback: "술식 모드로 전환합니다." },
+  { mode: "particles", words: ["파티클 모드", "입자 모드", "우주 파티클", "파티클", "입자"], feedback: "파티클 모드로 전환합니다." },
   { mode: "weather", words: ["날씨 모드", "날씨"], feedback: "날씨 모드로 전환합니다." },
   { mode: "effects", words: ["효과 모드", "효과", "이펙트"], feedback: "효과 모드로 전환합니다." },
   { mode: "game", words: ["게임 모드", "게임"], feedback: "게임 모드로 전환합니다." },

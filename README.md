@@ -12,6 +12,7 @@
 
 - [프로젝트 핵심](#프로젝트-핵심)
 - [기능 한눈에 보기](#기능-한눈에-보기)
+- [브랜드 키트](#브랜드-키트)
 - [빠른 실행](#빠른-실행)
 - [전체 작동 구조](#전체-작동-구조)
 - [모드별 상세 설명](#모드별-상세-설명)
@@ -123,6 +124,25 @@ Gesture Bridge는 같은 카메라 입력에서 출발하지만 목적이 다른
   <img src="docs/assets/readme-09-command-dispatch-ko.png" alt="제스처와 한국어 음성 명령이 dispatcher로 모이는 흐름" width="100%" />
 </p>
 
+## 브랜드 키트
+
+프로젝트 이름을 `Gesture Bridge`로 정리하면서 메인 랜딩의 블루/오렌지 shader 배경에 맞는 브랜드 마크, 앱 아이콘, 모드 아이콘, 공유 배너를 PNG 자산으로 추가했습니다. 생성형 이미지 안의 글자는 깨질 수 있으므로, 실제 UI의 제품명과 설명 문구는 코드에서 텍스트로 렌더링하고 이미지는 심볼/아이콘 역할로만 사용합니다.
+
+<p align="center">
+  <img src="public/brand/gesture-bridge-lockup-light.png" alt="Gesture Bridge 브랜드 락업" width="74%" />
+</p>
+
+| 자산 | 경로 | 사용처 |
+| --- | --- | --- |
+| 브랜드 마크 | `public/brand/gesture-bridge-mark-512.png` | 홈/인터랙티브 헤더 로고 |
+| 앱 아이콘 | `public/icon.png`, `public/apple-icon.png` | 브라우저 파비콘, Apple icon |
+| 모드 아이콘 | `public/brand/mode-pc-control-512.png` | PC 제어 선택 카드 |
+| 모드 아이콘 | `public/brand/mode-sign-sentence-512.png` | 수화 문장 선택 카드 |
+| 모드 아이콘 | `public/brand/mode-interactive-stage-512.png` | 인터랙티브 체험 선택 카드 |
+| 공유 배너 | `public/brand/gesture-bridge-banner.png` | README/OG 이미지 |
+
+자세한 색상, 로고 사용 규칙, 자산 목록은 [docs/brand/README.md](docs/brand/README.md)에 정리했습니다.
+
 ## 빠른 실행
 
 ### 1. Python 환경 준비
@@ -167,7 +187,13 @@ pnpm start --hostname 127.0.0.1 --port 3001
 
 ### 3. 가장 먼저 확인할 명령
 
-실제 마우스나 키보드를 움직이지 않는 PC 제어 dry-run입니다.
+브라우저에서 PC 제어 웹 모드를 바로 열 수 있습니다.
+
+```text
+http://127.0.0.1:3000/pc-control
+```
+
+실제 마우스나 키보드를 움직이지 않는 Python PC 제어 dry-run입니다.
 
 ```bash
 PYTHONPATH=src python -m gesture_bridge pc-control
@@ -265,7 +291,7 @@ flowchart TB
 
 ### PC 제어 모드
 
-PC 제어 모드는 한 손의 정적인 제스처를 빠르게 판정해 실제 화면 조작으로 연결합니다.
+PC 제어 모드는 한 손의 정적인 제스처를 빠르게 판정해 브라우저 내부 데스크톱 또는 실제 화면 조작으로 연결합니다.
 
 | 손동작 | 내부 이름 | 동작 |
 | --- | --- | --- |
@@ -277,6 +303,10 @@ PC 제어 모드는 한 손의 정적인 제스처를 빠르게 판정해 실제
 | 엄지 내리기 | `thumbs_down` | 아래로 스크롤 |
 
 실행:
+
+```text
+http://127.0.0.1:3000/pc-control
+```
 
 ```bash
 PYTHONPATH=src python -m gesture_bridge pc-control
@@ -355,6 +385,24 @@ Gloss:
 Korean sentence:
 집에 불이 났어요.
 Source: exact:GKSL3k_original.csv, score=1.00, matched_gloss=집 불
+```
+
+### 웹 수화 텍스트 모드
+
+랜딩 페이지의 `수화 텍스트 실행` 버튼 또는 아래 URL에서 브라우저로 바로 실행합니다.
+
+```text
+http://127.0.0.1:3000/sign-text
+```
+
+웹 모드는 MediaPipe Holistic으로 손, 팔, 얼굴 blendshape를 함께 추적하고, `public/models/sign_knn.browser.json`의 30프레임 KNN 모델로 gloss token을 분류합니다. 단어가 안정적으로 인식될 때마다 하단에 단어와 confidence가 쌓이고, 양손을 가까이 모아 유지하거나 `문장 끝` 버튼을 누르면 문장 정리와 한국어 음성 출력이 실행됩니다.
+
+OpenAI API 키가 있으면 `/api/sign-text/refine`이 OpenAI Responses API로 gloss token과 얼굴 표정을 자연스러운 한국어 문장으로 정리합니다. 키가 없으면 같은 화면 흐름을 유지하면서 로컬 문장 보정 결과로 fallback 됩니다.
+
+```bash
+cp .env.example .env.local
+# .env.local에 OPENAI_API_KEY를 설정하면 실제 LLM 문장 정리를 사용합니다.
+pnpm dev
 ```
 
 ### 인터랙티브 체험 모드
@@ -491,6 +539,10 @@ PYTHONPATH=src python -m gesture_bridge probe-camera
 ```
 
 ### PC 제어
+
+```text
+http://127.0.0.1:3000/pc-control
+```
 
 ```bash
 PYTHONPATH=src python -m gesture_bridge pc-control

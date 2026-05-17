@@ -3,6 +3,7 @@
 import Image from "next/image"
 import Link from "next/link"
 import { useCallback, useEffect, useRef, useState } from "react"
+import { Shader, ChromaFlow, Swirl } from "shaders/react"
 import {
   ArrowLeft,
   Box,
@@ -31,6 +32,8 @@ import {
   Volume2,
   VolumeX,
 } from "lucide-react"
+import { CosmicParticlePlayground } from "@/components/interactive/CosmicParticlePlayground"
+import { SatoruTechniquePanel } from "@/components/interactive/SatoruTechniquePanel"
 import { CustomCursor } from "@/components/custom-cursor"
 import { GrainOverlay } from "@/components/grain-overlay"
 import { createEffectParticles, EFFECT_DEFINITIONS, getEffectDefinition, type EffectParticle } from "@/lib/interactive/features/effects"
@@ -124,6 +127,8 @@ const MODE_LABELS: Record<InteractiveMode, string> = {
   home: "홈",
   image: "사진",
   drawing: "그림",
+  satoru: "술식",
+  particles: "파티클",
   weather: "날씨",
   effects: "효과",
   game: "게임",
@@ -134,48 +139,19 @@ const MODE_LABELS: Record<InteractiveMode, string> = {
 
 const MODE_ITEMS: Array<{ mode: InteractiveMode; icon: typeof Home; helper: string }> = [
   { mode: "home", icon: Home, helper: "전체 상태" },
-  { mode: "image", icon: ImageIcon, helper: "집고 이동" },
   { mode: "drawing", icon: Paintbrush, helper: "공중 드로잉" },
-  { mode: "weather", icon: CloudSun, helper: "한국어 날씨" },
+  { mode: "satoru", icon: WandSparkles, helper: "SAT0RU 레퍼런스" },
+  { mode: "particles", icon: Sparkles, helper: "우주 입자장" },
   { mode: "effects", icon: Sparkles, helper: "제스처 효과" },
   { mode: "game", icon: Gamepad2, helper: "미니게임" },
   { mode: "three", icon: Box, helper: "입체 조작" },
+  { mode: "weather", icon: CloudSun, helper: "한국어 날씨" },
+  { mode: "image", icon: ImageIcon, helper: "이미지 패널" },
   { mode: "music", icon: Music, helper: "미디어 제어" },
   { mode: "settings", icon: Settings, helper: "명령 도움말" },
 ]
 
-const INITIAL_IMAGES: FloatingImagePanel[] = [
-  {
-    id: 1,
-    title: "손동작 제어",
-    src: "/gesture-control-mode.png",
-    x: 0.32,
-    y: 0.36,
-    scale: 1,
-    rotation: -4,
-    visible: true,
-  },
-  {
-    id: 2,
-    title: "수화 텍스트",
-    src: "/sign-text-mode.png",
-    x: 0.66,
-    y: 0.54,
-    scale: 0.92,
-    rotation: 5,
-    visible: true,
-  },
-  {
-    id: 3,
-    title: "인터랙티브 체험",
-    src: "/interactive-experience-mode.png",
-    x: 0.48,
-    y: 0.72,
-    scale: 0.84,
-    rotation: 0,
-    visible: true,
-  },
-]
+const INITIAL_IMAGES: FloatingImagePanel[] = []
 
 const DRAW_COLORS = ["#38bdf8", "#ef4444", "#f97316", "#facc15", "#22c55e", "#a855f7", "#ffffff"]
 const MUSIC_TRACKS = ["네온 펄스", "스카이 라인", "에너지 필드"]
@@ -188,6 +164,8 @@ const COMMAND_SAMPLES = [
   "그림 그리기 시작",
   "지우개",
   "전체 지워줘",
+  "사토루 보여줘",
+  "파티클 모드",
   "효과 실행",
   "게임 시작",
   "3D 보여줘",
@@ -206,6 +184,31 @@ const EFFECT_BY_GESTURE: Partial<Record<GestureName, EffectId>> = {
   peace: "shield",
 }
 
+const EFFECT_GESTURE_PRIORITY: GestureName[] = ["pinch", "point", "open_palm", "fist", "peace", "swipe_left", "swipe_right", "two_hands_spread"]
+
+const HAND_CONNECTIONS = [
+  [0, 1],
+  [1, 2],
+  [2, 3],
+  [3, 4],
+  [0, 5],
+  [5, 6],
+  [6, 7],
+  [7, 8],
+  [0, 9],
+  [9, 10],
+  [10, 11],
+  [11, 12],
+  [0, 13],
+  [13, 14],
+  [14, 15],
+  [15, 16],
+  [0, 17],
+  [17, 18],
+  [18, 19],
+  [19, 20],
+] as const
+
 export function InteractiveExperience() {
   const stageRef = useRef<HTMLDivElement>(null)
   const videoRef = useRef<HTMLVideoElement>(null)
@@ -220,6 +223,7 @@ export function InteractiveExperience() {
   const previousTwoHandDistanceRef = useRef<number | null>(null)
   const latestSnapshotRef = useRef<GestureSnapshot>(createEmptyGestureSnapshot())
   const pointerRef = useRef<Point>({ x: 0.52, y: 0.52 })
+  const smoothedPointerRef = useRef<Point | null>(null)
   const pointerDownRef = useRef(false)
   const particlesRef = useRef<EffectParticle[]>([])
   const drawingHistoryRef = useRef<ImageData[]>([])
@@ -230,6 +234,7 @@ export function InteractiveExperience() {
   const oscillatorRef = useRef<OscillatorNode | null>(null)
   const logIdRef = useRef(1)
   const lastGestureActionRef = useRef<Record<string, number>>({})
+  const lastEffectAtRef = useRef(-9999)
   const lastPinchUiRef = useRef(0)
   const mountedRef = useRef(false)
 
@@ -238,10 +243,11 @@ export function InteractiveExperience() {
   const [voiceState, setVoiceState] = useState("음성 대기")
   const [voiceActive, setVoiceActive] = useState(false)
   const [trackingMode, setTrackingMode] = useState<"camera" | "simulation">("simulation")
+  const [cameraPreviewActive, setCameraPreviewActive] = useState(false)
   const [snapshot, setSnapshot] = useState<GestureSnapshot>(createEmptyGestureSnapshot())
   const [logs, setLogs] = useState<InteractionLog[]>([{ id: 0, text: "체험 시작 버튼으로 카메라를 켜거나 마우스 시뮬레이션을 사용하세요.", tone: "info" }])
   const [images, setImages] = useState<FloatingImagePanel[]>(INITIAL_IMAGES)
-  const [selectedImageId, setSelectedImageId] = useState(1)
+  const [selectedImageId, setSelectedImageId] = useState(0)
   const [weather, setWeather] = useState<WeatherInfo | null>(null)
   const [weatherLoading, setWeatherLoading] = useState(false)
   const [drawingTool, setDrawingTool] = useState<DrawingTool>("pen")
@@ -269,6 +275,10 @@ export function InteractiveExperience() {
 
   const changeMode = useCallback(
     (nextMode: InteractiveMode, reason?: string) => {
+      if (nextMode !== "effects") {
+        particlesRef.current = []
+        lastEffectAtRef.current = -9999
+      }
       setMode(nextMode)
       addLog(reason ?? `${MODE_LABELS[nextMode]} 모드로 전환했습니다.`, "success")
     },
@@ -280,16 +290,23 @@ export function InteractiveExperience() {
       const rect = stageRef.current?.getBoundingClientRect()
       const x = point.x * (rect?.width ?? window.innerWidth)
       const y = point.y * (rect?.height ?? window.innerHeight)
+      const now = performance.now()
+      const manualTrigger = typeof amount === "number"
+      if (!manualTrigger && now - lastEffectAtRef.current < 1180) return
+      lastEffectAtRef.current = now
       setActiveEffect(effectId)
-      particlesRef.current.push(...createEffectParticles(effectId, x, y, Math.floor(performance.now()), amount))
-      addLog(`${getEffectDefinition(effectId).label} 효과를 실행했습니다.`, "success")
+      particlesRef.current = createEffectParticles(effectId, x, y, Math.floor(now), amount)
+      if (manualTrigger || now - (lastGestureActionRef.current["effect-log"] ?? 0) > 1600) {
+        lastGestureActionRef.current["effect-log"] = now
+        addLog(`${getEffectDefinition(effectId).label} 효과를 실행했습니다.`, "success")
+      }
     },
     [addLog],
   )
 
   const resetImages = useCallback(() => {
     setImages(INITIAL_IMAGES)
-    setSelectedImageId(1)
+    setSelectedImageId(0)
   }, [])
 
   const updateSelectedImage = useCallback((updater: (image: FloatingImagePanel) => FloatingImagePanel) => {
@@ -634,6 +651,8 @@ export function InteractiveExperience() {
         await videoRef.current.play()
       }
 
+      setCameraPreviewActive(true)
+      setTrackingMode("camera")
       setCameraState("손 추적 모델 로딩")
       const vision = await import("@mediapipe/tasks-vision")
       const fileset = await vision.FilesetResolver.forVisionTasks("/mediapipe/wasm")
@@ -646,22 +665,30 @@ export function InteractiveExperience() {
         numHands: 2,
       })
 
-      setTrackingMode("camera")
       setCameraState("카메라 손 추적 중")
       addLog("카메라 손 추적을 시작했습니다.", "success")
     } catch (error) {
       console.error(error)
-      setTrackingMode("simulation")
-      setCameraState("카메라 실패, 마우스 시뮬레이션")
-      addLog("카메라 또는 손 추적 모델을 시작하지 못해 마우스 시뮬레이션으로 전환했습니다.", "warning")
+      const hasCameraStream = Boolean(streamRef.current)
+      setCameraPreviewActive(hasCameraStream)
+      setTrackingMode(hasCameraStream ? "camera" : "simulation")
+      setCameraState(hasCameraStream ? "카메라 표시 중, 손 추적 실패" : "카메라 실패, 마우스 시뮬레이션")
+      addLog(
+        hasCameraStream
+          ? "카메라는 표시하지만 손 추적 모델은 시작하지 못했습니다."
+          : "카메라 또는 손 추적 모델을 시작하지 못해 마우스 시뮬레이션으로 전환했습니다.",
+        "warning",
+      )
     }
   }, [addLog])
 
   const stopCamera = useCallback(() => {
     streamRef.current?.getTracks().forEach((track) => track.stop())
     streamRef.current = null
+    setCameraPreviewActive(false)
     landmarkerRef.current?.close?.()
     landmarkerRef.current = null
+    smoothedPointerRef.current = null
     setTrackingMode("simulation")
     setCameraState("마우스 시뮬레이션")
     addLog("카메라를 끄고 시뮬레이션으로 전환했습니다.", "info")
@@ -707,13 +734,20 @@ export function InteractiveExperience() {
     (nextSnapshot: GestureSnapshot) => {
       const now = nextSnapshot.timestamp
       const dominant = nextSnapshot.activeGesture
+      const pinching = isPinching(nextSnapshot)
       const combo = comboManagerRef.current.feed(dominant, now)
       nextSnapshot.comboProgress = combo.progress
 
       if (combo.triggered) {
         const action = combo.triggered.action
-        addLog(action.message, "success")
-        if (action.type === "effect") pushEffect(action.effectId, nextSnapshot.pointer, 78)
+        if (action.type === "effect") {
+          if (mode === "effects") {
+            addLog(action.message, "success")
+            pushEffect(action.effectId, nextSnapshot.pointer, 78)
+          }
+        } else {
+          addLog(action.message, "success")
+        }
         if (action.type === "image_next") nextImage()
         if (action.type === "mode") changeMode(action.mode, action.message)
         if (action.type === "reset") {
@@ -723,7 +757,7 @@ export function InteractiveExperience() {
         }
       }
 
-      if (dominant === "pinch" && now - lastPinchUiRef.current > 650) {
+      if (pinching && now - lastPinchUiRef.current > 650) {
         const rect = stageRef.current?.getBoundingClientRect()
         const element = rect
           ? document.elementFromPoint(rect.left + nextSnapshot.pointer.x * rect.width, rect.top + nextSnapshot.pointer.y * rect.height)
@@ -738,7 +772,7 @@ export function InteractiveExperience() {
       if (mode === "image") {
         if (nextSnapshot.swipe === "left" && shouldRun("swipe-left", now, 760)) previousImage()
         if (nextSnapshot.swipe === "right" && shouldRun("swipe-right", now, 760)) nextImage()
-        if (dominant === "pinch") {
+        if (pinching) {
           updateSelectedImage((image) => ({
             ...image,
             x: clamp(nextSnapshot.pointer.x, 0.16, 0.84),
@@ -753,15 +787,15 @@ export function InteractiveExperience() {
       }
 
       if (mode === "drawing") {
-        const shouldDraw = dominant === "point" || dominant === "pinch"
+        const shouldDraw = nextSnapshot.activeGestures.includes("point") || pinching
         drawAtPointer(nextSnapshot.pointer, shouldDraw)
       } else {
         lastDrawPointRef.current = null
       }
 
       if (mode === "effects") {
-        const effect = EFFECT_BY_GESTURE[dominant]
-        if (effect && shouldRun(`effect-${effect}`, now, 900)) pushEffect(effect, nextSnapshot.pointer)
+        const effect = getEffectForSnapshot(nextSnapshot)
+        if (effect && shouldRun("effect-global", now, 1180)) pushEffect(effect, nextSnapshot.pointer)
       }
 
       if (mode === "three") {
@@ -805,7 +839,12 @@ export function InteractiveExperience() {
           })
           gestureHistoryRef.current = recognized.history
           previousTwoHandDistanceRef.current = recognized.snapshot.twoHandDistance
-          if (recognized.snapshot.hands.length > 0) nextSnapshot = mirrorSnapshotForStage(recognized.snapshot)
+          if (recognized.snapshot.hands.length > 0) {
+            const mappedSnapshot = mirrorSnapshotForStage(recognized.snapshot, video, stageRef.current?.getBoundingClientRect())
+            nextSnapshot = smoothSnapshotPointer(mappedSnapshot, smoothedPointerRef)
+          } else {
+            smoothedPointerRef.current = null
+          }
         } catch {
           setCameraState("손 추적 재시도 중")
         }
@@ -820,6 +859,16 @@ export function InteractiveExperience() {
     raf = requestAnimationFrame(loop)
     return () => cancelAnimationFrame(raf)
   }, [handleGestureActions, trackingMode])
+
+  useEffect(() => {
+    if (mode !== "effects") {
+      particlesRef.current = []
+      const canvas = effectsCanvasRef.current
+      const context = canvas?.getContext("2d")
+      const rect = stageRef.current?.getBoundingClientRect()
+      if (canvas && context) context.clearRect(0, 0, rect?.width ?? canvas.width, rect?.height ?? canvas.height)
+    }
+  }, [mode])
 
   useEffect(() => {
     const resize = () => {
@@ -882,7 +931,7 @@ export function InteractiveExperience() {
         if (!gameRuntimeRef.current || gameRuntimeRef.current.id !== miniGame) {
           gameRuntimeRef.current = createMiniGameRuntime(miniGame)
         }
-        stepMiniGame(gameRuntimeRef.current, rect, latestSnapshotRef.current.pointer, latestSnapshotRef.current.activeGesture === "pinch")
+        stepMiniGame(gameRuntimeRef.current, rect, latestSnapshotRef.current.pointer, isPinching(latestSnapshotRef.current))
         setGameScore(gameRuntimeRef.current.score)
         setGameMessage(gameRuntimeRef.current.message)
         drawMiniGame(context, rect, gameRuntimeRef.current, latestSnapshotRef.current.pointer)
@@ -914,21 +963,16 @@ export function InteractiveExperience() {
       <GrainOverlay />
 
       <div className="fixed inset-0 z-0" style={{ contain: "strict" }}>
-        <Image
-          src="/interactive-experience-mode.png"
-          alt=""
-          aria-hidden="true"
-          fill
-          priority
-          sizes="100vw"
-          className="scale-105 object-cover opacity-28 blur-sm saturate-[0.78]"
-        />
-        <div className="absolute inset-0 bg-black/68" />
-        <div className="absolute inset-0 bg-[linear-gradient(115deg,rgba(6,48,71,0.28),transparent_42%,rgba(31,63,57,0.24))]" />
+        <Shader className="absolute inset-0 h-full w-full opacity-100">
+          <Swirl colorA="#1275d8" colorB="#e19136" speed={0.8} detail={1.18} mixBlendMode="soft-light" />
+          <ChromaFlow baseColor="#0066ff" upColor="#0066ff" leftColor="#e19136" rightColor="#e19136" downColor="#d1d1d1" opacity={0.97} range={0.22} speed={0.1} scale={1.8} />
+        </Shader>
+        <div className="absolute inset-0 bg-[radial-gradient(circle_at_24%_16%,rgba(0,102,255,0.34),transparent_28%),radial-gradient(circle_at_82%_36%,rgba(225,145,54,0.30),transparent_30%),linear-gradient(180deg,rgba(0,0,0,0.22),rgba(0,0,0,0.78))]" />
+        <div className="absolute inset-0 bg-black/22" />
       </div>
 
       <section className="relative z-10 flex min-h-screen flex-col px-4 py-4 md:px-6 lg:px-8">
-        <header className="relative z-[80] mx-auto flex w-full max-w-7xl flex-wrap items-center justify-between gap-3 border-b border-foreground/10 pb-4">
+        <header className="relative z-[80] mx-auto flex w-full max-w-7xl flex-wrap items-center justify-between gap-3 rounded-lg border border-foreground/10 bg-background/24 px-4 py-3 shadow-2xl shadow-black/18 backdrop-blur-2xl">
           <div className="flex items-center gap-3">
             <Link
               href="/"
@@ -939,7 +983,14 @@ export function InteractiveExperience() {
               <ArrowLeft className="h-5 w-5" />
             </Link>
             <div className="grid h-10 w-10 place-items-center rounded-lg border border-foreground/12 bg-foreground/10 backdrop-blur-md">
-              <Hand className="h-5 w-5 text-foreground" />
+              <Image
+                src="/brand/gesture-bridge-mark-512.png"
+                alt=""
+                width={40}
+                height={40}
+                priority
+                className="h-9 w-9 object-contain drop-shadow-[0_0_10px_rgba(225,145,54,0.4)]"
+              />
             </div>
             <div>
               <h1 className="font-sans text-xl font-light tracking-tight md:text-2xl">인터랙티브 스테이지</h1>
@@ -949,7 +1000,14 @@ export function InteractiveExperience() {
 
           <div className="flex flex-wrap items-center gap-2">
             <ControlButton icon={Camera} label={trackingMode === "camera" ? "카메라 끄기" : "체험 시작"} onClick={trackingMode === "camera" ? stopCamera : startCamera} active={trackingMode === "camera"} />
-            <ControlButton icon={trackingMode === "simulation" ? MousePointer2 : Hand} label={trackingMode === "simulation" ? "마우스 시뮬레이션" : "손 추적 중"} onClick={() => setTrackingMode("simulation")} />
+            <ControlButton
+              icon={trackingMode === "simulation" ? MousePointer2 : Hand}
+              label={trackingMode === "simulation" ? "마우스 시뮬레이션" : "손 추적 중"}
+              onClick={() => {
+                smoothedPointerRef.current = null
+                setTrackingMode("simulation")
+              }}
+            />
             <ControlButton icon={voiceActive ? MicOff : Mic} label={voiceActive ? "음성 끄기" : "음성 켜기"} onClick={voiceActive ? stopVoice : startVoice} active={voiceActive} />
             <ControlButton icon={HelpCircle} label={helpOpen ? "도움말 닫기" : "도움말"} onClick={() => setHelpOpen((value) => !value)} active={helpOpen} />
           </div>
@@ -994,17 +1052,26 @@ export function InteractiveExperience() {
             onPointerLeave={() => {
               pointerDownRef.current = false
             }}
-            className="relative order-1 min-h-[620px] overflow-hidden rounded-lg border border-foreground/12 bg-background/36 shadow-2xl shadow-black/30 backdrop-blur-md lg:order-2"
+            className="relative order-1 min-h-[620px] overflow-hidden rounded-lg border border-foreground/14 bg-black/72 shadow-2xl shadow-black/34 backdrop-blur-xl lg:order-2"
           >
-            <video ref={videoRef} className="absolute inset-0 h-full w-full scale-x-[-1] object-cover opacity-26" playsInline muted />
+            <StageIdleBackdrop visible={!cameraPreviewActive && mode === "home"} />
+            <video
+              ref={videoRef}
+              className={`absolute inset-0 z-0 h-full w-full scale-x-[-1] object-cover transition-opacity duration-300 ${
+                cameraPreviewActive ? "opacity-100" : "opacity-0"
+              }`}
+              autoPlay
+              playsInline
+              muted
+            />
             <canvas ref={drawingCanvasRef} className="pointer-events-none absolute inset-0 z-20" />
             <canvas ref={effectsCanvasRef} className="pointer-events-none absolute inset-0 z-30" />
             <canvas ref={gameCanvasRef} className={`pointer-events-none absolute inset-0 z-40 ${mode === "game" ? "opacity-100" : "opacity-0"}`} />
 
-            <div className="absolute inset-0 z-10 bg-[radial-gradient(circle_at_center,transparent,rgba(0,0,0,0.38))]" />
             <StageStatus mode={mode} cameraState={cameraState} voiceState={voiceState} snapshot={snapshot} />
-            <FloatingImages images={images} selectedId={selectedImageId} onSelect={setSelectedImageId} />
             {mode === "weather" ? <WeatherPanel weather={weather} loading={weatherLoading} onRequest={() => void requestWeather("서울")} /> : null}
+            {mode === "satoru" ? <SatoruTechniquePanel /> : null}
+            {mode === "particles" ? <CosmicParticlePlayground pointer={snapshot.pointer} activeGesture={snapshot.activeGesture} pinching={isPinching(snapshot)} /> : null}
             {mode === "effects" ? <EffectPanel activeEffect={activeEffect} onTrigger={pushEffect} /> : null}
             {mode === "game" ? <GamePanel definition={activeGameDefinition} score={gameScore} message={gameMessage} onNext={() => switchMiniGame()} /> : null}
             {mode === "three" ? <ThreeObjectPanel visible={threeVisible} pointer={snapshot.pointer} scale={threeScale} activeGesture={snapshot.activeGesture} /> : null}
@@ -1035,6 +1102,7 @@ export function InteractiveExperience() {
               onSave={saveDrawing}
             />
 
+            <HandDebugOverlay snapshot={snapshot} />
             <VirtualPointer pointer={snapshot.pointer} gesture={snapshot.activeGesture} />
           </section>
 
@@ -1125,6 +1193,27 @@ function ControlButton({
   )
 }
 
+function StageIdleBackdrop({ visible }: { visible: boolean }) {
+  return (
+    <div
+      className={`pointer-events-none absolute inset-0 z-[2] transition-opacity duration-500 ${
+        visible ? "opacity-100" : "opacity-0"
+      }`}
+    >
+      <div className="absolute inset-0 bg-[radial-gradient(circle_at_28%_28%,rgba(18,117,216,0.34),transparent_30%),radial-gradient(circle_at_72%_62%,rgba(225,145,54,0.24),transparent_34%),linear-gradient(135deg,rgba(6,8,18,0.82),rgba(5,10,26,0.9))]" />
+      <div className="absolute inset-x-0 top-0 h-px bg-[linear-gradient(90deg,transparent,rgba(255,255,255,0.36),transparent)]" />
+      <div className="absolute left-1/2 top-1/2 h-[min(58vw,520px)] w-[min(58vw,520px)] -translate-x-1/2 -translate-y-1/2 rounded-full border border-white/10 bg-white/[0.025] shadow-[0_0_80px_rgba(18,117,216,0.20)]" />
+      <div className="absolute left-1/2 top-1/2 h-[min(34vw,310px)] w-[min(34vw,310px)] -translate-x-1/2 -translate-y-1/2 rounded-full border border-[#e19136]/18" />
+      <div className="absolute inset-0 bg-[linear-gradient(rgba(255,255,255,0.055)_1px,transparent_1px),linear-gradient(90deg,rgba(255,255,255,0.045)_1px,transparent_1px)] bg-[size:64px_64px] opacity-20" />
+      <div className="absolute left-1/2 top-1/2 w-[min(520px,80%)] -translate-x-1/2 -translate-y-1/2 text-center">
+        <p className="text-[10px] uppercase tracking-[0.36em] text-white/42">gesture bridge</p>
+        <h2 className="mt-3 text-3xl font-light tracking-tight text-white md:text-5xl">Interactive Stage</h2>
+        <p className="mx-auto mt-3 max-w-md text-sm leading-relaxed text-white/58">카메라를 켜면 손 포인터가 실제 영상 비율에 맞춰 보정됩니다.</p>
+      </div>
+    </div>
+  )
+}
+
 function StageStatus({
   mode,
   cameraState,
@@ -1146,6 +1235,7 @@ function StageStatus({
         <Chip icon={Camera} text={cameraState} />
         <Chip icon={Mic} text={voiceState} />
         <Chip icon={Layers} text={`제스처: ${GESTURE_LABELS[snapshot.activeGesture]}`} />
+        <Chip icon={Hand} text={handStatusText(snapshot)} />
         <Chip icon={WandSparkles} text={`콤보: ${snapshot.comboProgress.length ? snapshot.comboProgress.join(" → ") : "대기"}`} />
       </div>
     </div>
@@ -1161,47 +1251,47 @@ function Chip({ icon: Icon, text }: { icon: typeof Camera; text: string }) {
   )
 }
 
-function FloatingImages({
-  images,
-  selectedId,
-  onSelect,
-}: {
-  images: FloatingImagePanel[]
-  selectedId: number
-  onSelect: (id: number) => void
-}) {
+function HandDebugOverlay({ snapshot }: { snapshot: GestureSnapshot }) {
+  if (!snapshot.hands.length) return null
+
   return (
-    <div className="pointer-events-none absolute inset-0 z-[15]">
-      {images.map((image) =>
-        image.visible ? (
-          <button
-            key={image.id}
-            onClick={() => onSelect(image.id)}
-            className={`pointer-events-auto absolute w-[clamp(170px,38vw,330px)] overflow-hidden rounded-lg border bg-background/44 text-left shadow-2xl transition ${
-              selectedId === image.id ? "border-foreground/48 shadow-black/32" : "border-foreground/14 shadow-black/32"
-            }`}
-            style={{
-              left: `${image.x * 100}%`,
-              top: `${image.y * 100}%`,
-              transform: `translate(-50%, -50%) scale(${image.scale}) rotate(${image.rotation}deg)`,
-            }}
-          >
-            <Image
-              src={image.src}
-              alt={`${image.title} 이미지`}
-              width={640}
-              height={400}
-              sizes="(max-width: 768px) 70vw, 330px"
-              className="aspect-[16/10] w-full object-cover"
-            />
-            <div className="flex items-center justify-between px-3 py-2">
-              <span className="truncate text-xs font-semibold text-foreground/84">{image.title}</span>
-              <span className="hidden shrink-0 text-[10px] text-foreground/42 sm:inline">집기 이동 · 양손 확대</span>
-            </div>
-          </button>
-        ) : null,
-      )}
-    </div>
+    <svg className="pointer-events-none absolute inset-0 z-[60] h-full w-full" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">
+      {snapshot.hands.map((hand, handIndex) => {
+        const color = handIndex === 0 ? "rgba(103,232,249,0.82)" : "rgba(250,204,21,0.72)"
+        return (
+          <g key={hand.id}>
+            {HAND_CONNECTIONS.map(([start, end]) => {
+              const left = hand.landmarks[start]
+              const right = hand.landmarks[end]
+              if (!left || !right) return null
+              return (
+                <line
+                  key={`${start}-${end}`}
+                  x1={left.x * 100}
+                  y1={left.y * 100}
+                  x2={right.x * 100}
+                  y2={right.y * 100}
+                  stroke={color}
+                  strokeWidth="0.22"
+                  strokeLinecap="round"
+                  vectorEffect="non-scaling-stroke"
+                />
+              )
+            })}
+            {hand.landmarks.map((landmark, index) => (
+              <circle
+                key={index}
+                cx={landmark.x * 100}
+                cy={landmark.y * 100}
+                r={index === 8 ? 0.64 : index === 4 ? 0.52 : 0.36}
+                fill={index === 8 ? "rgba(255,255,255,0.95)" : color}
+                vectorEffect="non-scaling-stroke"
+              />
+            ))}
+          </g>
+        )
+      })}
+    </svg>
   )
 }
 
@@ -1559,6 +1649,28 @@ function VirtualPointer({ pointer, gesture }: { pointer: Point; gesture: Gesture
   )
 }
 
+function handStatusText(snapshot: GestureSnapshot) {
+  const hand = snapshot.primaryHand
+  if (!hand) return "손 0 · 대기"
+  const fingers = [
+    hand.fingers.thumb ? "엄" : "",
+    hand.fingers.index ? "검" : "",
+    hand.fingers.middle ? "중" : "",
+    hand.fingers.ring ? "약" : "",
+    hand.fingers.pinky ? "소" : "",
+  ].join("") || "접힘"
+  return `손 ${snapshot.hands.length} · ${fingers} · 집기 ${Math.round(hand.pinchStrength * 100)}%`
+}
+
+function isPinching(snapshot: GestureSnapshot) {
+  return snapshot.activeGestures.includes("pinch") || (snapshot.primaryHand?.pinchStrength ?? 0) > 0.62
+}
+
+function getEffectForSnapshot(snapshot: GestureSnapshot) {
+  const gesture = EFFECT_GESTURE_PRIORITY.find((item) => snapshot.activeGestures.includes(item) && EFFECT_BY_GESTURE[item])
+  return gesture ? EFFECT_BY_GESTURE[gesture] : null
+}
+
 function createSimulationSnapshot(pointer: Point, gesture: GestureName, timestamp: number): GestureSnapshot {
   return {
     hands: [],
@@ -1574,32 +1686,75 @@ function createSimulationSnapshot(pointer: Point, gesture: GestureName, timestam
   }
 }
 
-function mirrorSnapshotForStage(snapshot: GestureSnapshot): GestureSnapshot {
+function mirrorSnapshotForStage(snapshot: GestureSnapshot, video?: HTMLVideoElement | null, rect?: DOMRect | null): GestureSnapshot {
   const mirrorGesture = (gesture: GestureName): GestureName => {
     if (gesture === "swipe_left") return "swipe_right"
     if (gesture === "swipe_right") return "swipe_left"
     return gesture
   }
   const mirroredSwipe = snapshot.swipe === "left" ? "right" : snapshot.swipe === "right" ? "left" : null
+  const mapPoint = (point: Point) => mapCameraPointToStage(point, video, rect)
+  const mapHand = (hand: GestureSnapshot["hands"][number]) => ({
+    ...hand,
+    landmarks: hand.landmarks.map((landmark) => ({
+      ...landmark,
+      ...mapPoint(landmark),
+    })),
+    center: mapPoint(hand.center),
+    pointer: mapPoint(hand.pointer),
+  })
+  const hands = snapshot.hands.map(mapHand)
+  const primaryHand = snapshot.primaryHand ? hands.find((hand) => hand.id === snapshot.primaryHand?.id) ?? mapHand(snapshot.primaryHand) : null
 
   return {
     ...snapshot,
-    hands: snapshot.hands.map((hand) => ({
-      ...hand,
-      center: { ...hand.center, x: 1 - hand.center.x },
-      pointer: { ...hand.pointer, x: 1 - hand.pointer.x },
-    })),
-    primaryHand: snapshot.primaryHand
-      ? {
-          ...snapshot.primaryHand,
-          center: { ...snapshot.primaryHand.center, x: 1 - snapshot.primaryHand.center.x },
-          pointer: { ...snapshot.primaryHand.pointer, x: 1 - snapshot.primaryHand.pointer.x },
-        }
-      : null,
-    pointer: { ...snapshot.pointer, x: 1 - snapshot.pointer.x },
+    hands,
+    primaryHand,
+    pointer: mapPoint(snapshot.pointer),
     activeGesture: mirrorGesture(snapshot.activeGesture),
     activeGestures: snapshot.activeGestures.map(mirrorGesture),
     swipe: mirroredSwipe,
+  }
+}
+
+function mapCameraPointToStage(point: Point, video?: HTMLVideoElement | null, rect?: DOMRect | null): Point {
+  const mirroredX = 1 - point.x
+  if (!video || !rect || !video.videoWidth || !video.videoHeight) {
+    return { x: clamp(mirroredX, 0, 1), y: clamp(point.y, 0, 1) }
+  }
+
+  const scale = Math.max(rect.width / video.videoWidth, rect.height / video.videoHeight)
+  const displayWidth = video.videoWidth * scale
+  const displayHeight = video.videoHeight * scale
+  const cropX = (displayWidth - rect.width) / 2
+  const cropY = (displayHeight - rect.height) / 2
+
+  return {
+    x: clamp((mirroredX * displayWidth - cropX) / rect.width, 0, 1),
+    y: clamp((point.y * displayHeight - cropY) / rect.height, 0, 1),
+  }
+}
+
+function smoothSnapshotPointer(snapshot: GestureSnapshot, pointerRef: { current: Point | null }): GestureSnapshot {
+  if (!snapshot.primaryHand) {
+    pointerRef.current = null
+    return snapshot
+  }
+  const previous = pointerRef.current
+  const nextPointer = previous
+    ? {
+        x: previous.x + (snapshot.pointer.x - previous.x) * 0.58,
+        y: previous.y + (snapshot.pointer.y - previous.y) * 0.58,
+      }
+    : snapshot.pointer
+  pointerRef.current = nextPointer
+  const primaryHand = { ...snapshot.primaryHand, pointer: nextPointer }
+
+  return {
+    ...snapshot,
+    pointer: nextPointer,
+    primaryHand,
+    hands: snapshot.hands.map((hand) => (hand.id === primaryHand.id ? primaryHand : hand)),
   }
 }
 
