@@ -116,8 +116,10 @@ const HOLISTIC_TRACKING_INTERVAL_MS = 1000 / 24
 const SIGN_UI_STATE_INTERVAL_MS = 1000 / 10
 const FINISH_PROGRESS_INTERVAL_MS = 1000 / 15
 const TRAINING_CAPTURE_FRAMES = 45
-const FINALIZE_LATEST_PREDICTION_MAX_AGE_MS = 5000
-const FINALIZE_LATEST_PREDICTION_MIN_CONFIDENCE = 0.45
+const FINALIZE_RECENT_PREDICTION_WINDOW_MS = 2600
+const FINALIZE_RECENT_PREDICTION_MIN_VOTES = 2
+const RECENT_PREDICTION_HISTORY_LIMIT = 24
+const FINALIZE_PREDICTION_MIN_CONFIDENCE = 0.45
 const STABLE_PREDICTION_MIN_CONFIDENCE = 0.5
 const STABLE_PREDICTION_WINDOW_MS = 1150
 const STABLE_PREDICTION_REQUIRED_MATCHES = 4
@@ -139,6 +141,12 @@ const EMPTY_EXPRESSION: FaceExpression = {
   },
 }
 
+type RecentSignPrediction = {
+  prediction: SignPrediction
+  expression: FaceExpression
+  timestamp: number
+}
+
 export function SignTextExperience() {
   const videoRef = useRef<HTMLVideoElement>(null)
   const overlayCanvasRef = useRef<HTMLCanvasElement>(null)
@@ -149,7 +157,7 @@ export function SignTextExperience() {
   const memoryRef = useRef<SentenceMemoryEntry[]>([])
   const sequenceRef = useRef<number[][]>([])
   const predictionHistoryRef = useRef<Array<{ label: string; confidence: number; timestamp: number }>>([])
-  const latestPredictionRef = useRef<{ prediction: SignPrediction; expression: FaceExpression; timestamp: number } | null>(null)
+  const recentPredictionsRef = useRef<RecentSignPrediction[]>([])
   const tokensRef = useRef<TokenRecord[]>([])
   const expressionRef = useRef<FaceExpression>(EMPTY_EXPRESSION)
   const expressionTrackerRef = useRef(createFaceExpressionTracker())
@@ -283,7 +291,7 @@ export function SignTextExperience() {
     landmarkerRef.current = null
     sequenceRef.current = []
     predictionHistoryRef.current = []
-    latestPredictionRef.current = null
+    recentPredictionsRef.current = []
     pendingTrainingLabelRef.current = ""
     trainingSequenceRef.current = []
     trainingSaveInFlightRef.current = false
@@ -390,20 +398,19 @@ export function SignTextExperience() {
       let currentTokens = tokensRef.current
       let sourceReason: string = reason
       if (!currentTokens.length) {
-        const latest = latestPredictionRef.current
-        const latestAge = latest ? performance.now() - latest.timestamp : Number.POSITIVE_INFINITY
-        if (latest && latestAge <= FINALIZE_LATEST_PREDICTION_MAX_AGE_MS && isFinalizablePrediction(latest.prediction)) {
+        const recentDecision = aggregateRecentPredictions(recentPredictionsRef.current, performance.now(), FINALIZE_RECENT_PREDICTION_WINDOW_MS)
+        if (recentDecision && recentDecision.votes >= FINALIZE_RECENT_PREDICTION_MIN_VOTES) {
           const latestToken: TokenRecord = {
             id: tokenIdRef.current++,
-            label: latest.prediction.label,
-            confidence: latest.prediction.confidence,
+            label: recentDecision.label,
+            confidence: recentDecision.confidence,
             timestamp: performance.now(),
-            expression: latest.expression,
+            expression: recentDecision.expression,
           }
           currentTokens = [latestToken]
           tokensRef.current = currentTokens
           setTokens(currentTokens)
-          sourceReason = `${reason}:latest`
+          sourceReason = `${reason}:interval`
         } else {
           setLlmState("인식된 단어 없음")
           setDraftSentence("문장으로 만들 단어가 없습니다.")
@@ -425,7 +432,7 @@ export function SignTextExperience() {
         }
         setFinalized((previous) => [sentence, ...previous].slice(0, 5))
         tokensRef.current = []
-        latestPredictionRef.current = null
+        recentPredictionsRef.current = []
         setTokens([])
         setDraftSentence(sentence.text)
         setFinishProgress(0)
@@ -456,7 +463,7 @@ export function SignTextExperience() {
     tokensRef.current = []
     sequenceRef.current = []
     predictionHistoryRef.current = []
-    latestPredictionRef.current = null
+    recentPredictionsRef.current = []
     pendingTrainingLabelRef.current = ""
     trainingSequenceRef.current = []
     trainingSaveInFlightRef.current = false
@@ -561,6 +568,7 @@ export function SignTextExperience() {
       sharedTrainingCountRef.current = training.sharedSampleCount
       sequenceRef.current = []
       predictionHistoryRef.current = []
+      recentPredictionsRef.current = []
       pendingTrainingLabelRef.current = ""
       trainingSequenceRef.current = []
       syncModelUi(training.model, "공유 학습 라벨과 샘플을 초기화했습니다.", training.sharedSampleCount)
@@ -588,6 +596,14 @@ export function SignTextExperience() {
       }
     }
     return null
+  }, [])
+
+  const recordSignPrediction = useCallback((prediction: SignPrediction, nextExpression: FaceExpression, now: number) => {
+    if (!isFinalizablePrediction(prediction)) return
+    recentPredictionsRef.current = [
+      ...recentPredictionsRef.current.filter((item) => now - item.timestamp <= FINALIZE_RECENT_PREDICTION_WINDOW_MS),
+      { prediction, expression: nextExpression, timestamp: now },
+    ].slice(-RECENT_PREDICTION_HISTORY_LIMIT)
   }, [])
 
   const updateFinishSignal = useCallback(
@@ -690,9 +706,7 @@ export function SignTextExperience() {
             frameIndexRef.current += 1
             if (frameIndexRef.current % 4 === 0) {
               const prediction = applyExpressionContext(predictSignSequence(model, sequenceRef.current), nextExpression)
-              if (isFinalizablePrediction(prediction)) {
-                latestPredictionRef.current = { prediction, expression: nextExpression, timestamp: now }
-              }
+              recordSignPrediction(prediction, nextExpression, now)
               lastPredictionUiAtRef.current = now
               setCurrentPrediction(prediction)
               const stable = updateStablePrediction(prediction, now)
@@ -721,7 +735,7 @@ export function SignTextExperience() {
 
     raf = requestAnimationFrame(loop)
     return () => cancelAnimationFrame(raf)
-  }, [cameraActive, emitToken, saveTrainingSample, updateFinishSignal, updateStablePrediction])
+  }, [cameraActive, emitToken, recordSignPrediction, saveTrainingSample, updateFinishSignal, updateStablePrediction])
 
   const drawOverlay = (result: HolisticResultLike) => {
     const canvas = overlayCanvasRef.current
@@ -1086,8 +1100,60 @@ function ConfidenceBar({ value }: { value: number }) {
   )
 }
 
+function aggregateRecentPredictions(predictions: RecentSignPrediction[], now: number, windowMs: number) {
+  const recent = predictions.filter((item) => now - item.timestamp <= windowMs && isFinalizablePrediction(item.prediction))
+  if (!recent.length) return null
+
+  const byLabel = new Map<
+    string,
+    {
+      confidenceSum: number
+      score: number
+      votes: number
+      expression: FaceExpression
+      lastSeenAt: number
+    }
+  >()
+
+  recent.forEach((item) => {
+    const current = byLabel.get(item.prediction.label)
+    const weightedConfidence = item.prediction.confidence * item.prediction.confidence
+    if (!current) {
+      byLabel.set(item.prediction.label, {
+        confidenceSum: item.prediction.confidence,
+        score: weightedConfidence,
+        votes: 1,
+        expression: item.expression,
+        lastSeenAt: item.timestamp,
+      })
+      return
+    }
+
+    current.confidenceSum += item.prediction.confidence
+    current.score += weightedConfidence
+    current.votes += 1
+    if (item.timestamp >= current.lastSeenAt) {
+      current.expression = item.expression
+      current.lastSeenAt = item.timestamp
+    }
+  })
+
+  const ranked = Array.from(byLabel.entries())
+    .map(([label, item]) => ({
+      label,
+      confidence: clamp(item.confidenceSum / item.votes, 0, 1),
+      score: item.score,
+      votes: item.votes,
+      expression: item.expression,
+      lastSeenAt: item.lastSeenAt,
+    }))
+    .sort((left, right) => right.score - left.score || right.votes - left.votes || right.lastSeenAt - left.lastSeenAt)
+
+  return ranked[0] ?? null
+}
+
 function isFinalizablePrediction(prediction: SignPrediction) {
-  return prediction.confidence >= FINALIZE_LATEST_PREDICTION_MIN_CONFIDENCE && prediction.label !== "대기" && prediction.label !== "버퍼링"
+  return prediction.confidence >= FINALIZE_PREDICTION_MIN_CONFIDENCE && prediction.label !== "대기" && prediction.label !== "버퍼링"
 }
 
 function detectFinishSignal(result: HolisticResultLike) {
