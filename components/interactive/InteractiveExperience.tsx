@@ -2,19 +2,16 @@
 
 import Image from "next/image"
 import Link from "next/link"
-import { memo, useCallback, useEffect, useRef, useState, type ReactNode } from "react"
-import { Shader, ChromaFlow, Swirl } from "shaders/react"
+import dynamic from "next/dynamic"
+import { useCallback, useEffect, useRef, useState } from "react"
 import {
   ArrowLeft,
   Box,
   Camera,
-  ChevronRight,
   CloudSun,
-  Crosshair,
   Eraser,
   Gamepad2,
   Hand,
-  HeartPulse,
   HelpCircle,
   Home,
   ImageIcon,
@@ -26,29 +23,23 @@ import {
   Paintbrush,
   Pause,
   Play,
-  Minus,
-  Plus,
-  RefreshCw,
   Save,
   Settings,
   Sparkles,
-  Timer,
   Trash2,
-  Trophy,
   Undo2,
   WandSparkles,
   Volume2,
   VolumeX,
 } from "lucide-react"
-import { CosmicParticlePlayground } from "@/components/interactive/CosmicParticlePlayground"
-import { SatoruTechniquePanel } from "@/components/interactive/SatoruTechniquePanel"
+import { ImageModePanel } from "@/components/interactive/ImageModePanel"
+import { StageBackdropFallback } from "@/components/interactive/StageBackdropFallback"
 import { CustomCursor } from "@/components/custom-cursor"
 import { GrainOverlay } from "@/components/grain-overlay"
 import {
   createEffectParticles,
   drawEffectField,
   drawEffectParticles,
-  EFFECT_DEFINITIONS,
   EFFECT_PARTICLE_LIMIT,
   getEffectDefinition,
   stepEffectParticles,
@@ -62,17 +53,12 @@ import {
   type MiniGameHudState,
   type MiniGameRuntime,
 } from "@/lib/interactive/features/mini-game-runtime"
-import { getMiniGameDefinition, getNextMiniGame, MINI_GAME_DEFINITIONS } from "@/lib/interactive/features/mini-games"
+import { getMiniGameDefinition, getNextMiniGame } from "@/lib/interactive/features/mini-games"
 import {
   getNextThreeScene,
-  getThreeSceneDefinition,
-  InteractiveThreeRuntime,
-  THREE_QUALITY_OPTIONS,
-  THREE_SCENE_DEFINITIONS,
   type ThreeQuality,
-  type ThreeRuntimeTelemetry,
   type ThreeSceneId,
-} from "@/lib/interactive/features/three-scene-runtime"
+} from "@/lib/interactive/features/three-scene-config"
 import { GestureComboManager } from "@/lib/interactive/gesture/gesture-combo-manager"
 import {
   createEmptyGestureSnapshot,
@@ -95,6 +81,36 @@ import type {
   WeatherInfo,
 } from "@/lib/interactive/types"
 import { parseKoreanCommand } from "@/lib/interactive/voice/korean-command-parser"
+
+const CosmicParticlePlayground = dynamic(() => import("@/components/interactive/CosmicParticlePlayground").then((module) => module.CosmicParticlePlayground), {
+  ssr: false,
+  loading: () => null,
+})
+
+const AnimatedStageBackdrop = dynamic(() => import("@/components/interactive/AnimatedStageBackdrop").then((module) => module.AnimatedStageBackdrop), {
+  ssr: false,
+  loading: () => <StageBackdropFallback />,
+})
+
+const SatoruTechniquePanel = dynamic(() => import("@/components/interactive/SatoruTechniquePanel").then((module) => module.SatoruTechniquePanel), {
+  ssr: false,
+  loading: () => null,
+})
+
+const EffectPanel = dynamic(() => import("@/components/interactive/EffectPanel").then((module) => module.EffectPanel), {
+  ssr: false,
+  loading: () => null,
+})
+
+const GamePanel = dynamic(() => import("@/components/interactive/GamePanel").then((module) => module.GamePanel), {
+  ssr: false,
+  loading: () => null,
+})
+
+const ThreeObjectPanel = dynamic(() => import("@/components/interactive/ThreeObjectPanel").then((module) => module.ThreeObjectPanel), {
+  ssr: false,
+  loading: () => null,
+})
 
 type SpeechRecognitionConstructor = new () => SpeechRecognitionLike
 
@@ -426,14 +442,21 @@ export function InteractiveExperience() {
     addLog("그림을 PNG 이미지로 저장했습니다.", "success")
   }, [addLog])
 
+  const clearDrawingCanvas = useCallback(
+    (notify: boolean) => {
+      const canvas = drawingCanvasRef.current
+      const context = canvas?.getContext("2d")
+      if (!canvas || !context) return
+      drawingHistoryRef.current = []
+      context.clearRect(0, 0, canvas.width, canvas.height)
+      if (notify) addLog("그림을 모두 지웠습니다.", "success")
+    },
+    [addLog],
+  )
+
   const clearDrawing = useCallback(() => {
-    const canvas = drawingCanvasRef.current
-    const context = canvas?.getContext("2d")
-    if (!canvas || !context) return
-    drawingHistoryRef.current = []
-    context.clearRect(0, 0, canvas.width, canvas.height)
-    addLog("그림을 모두 지웠습니다.", "success")
-  }, [addLog])
+    clearDrawingCanvas(true)
+  }, [clearDrawingCanvas])
 
   const undoDrawing = useCallback(() => {
     const canvas = drawingCanvasRef.current
@@ -987,6 +1010,13 @@ export function InteractiveExperience() {
   }, [mode])
 
   useEffect(() => {
+    if (mode !== "drawing") {
+      lastDrawPointRef.current = null
+      clearDrawingCanvas(false)
+    }
+  }, [clearDrawingCanvas, mode])
+
+  useEffect(() => {
     const resize = () => {
       const rect = stageRef.current?.getBoundingClientRect()
       ;[drawingCanvasRef.current, effectsCanvasRef.current, gameCanvasRef.current].forEach((canvas) => {
@@ -1023,7 +1053,6 @@ export function InteractiveExperience() {
           context.clearRect(0, 0, canvas.width, canvas.height)
           canvasHadContent = false
         }
-        raf = requestAnimationFrame(render)
         return
       }
       if (timestamp - lastPaintAt < EFFECT_FRAME_INTERVAL_MS) {
@@ -1047,26 +1076,29 @@ export function InteractiveExperience() {
   }, [activeEffect, mode])
 
   useEffect(() => {
+    const canvas = gameCanvasRef.current
+    const context = canvas?.getContext("2d")
+    const rect = stageRef.current?.getBoundingClientRect()
+    if (!canvas || !context || !rect) return
+
+    if (mode !== "game") {
+      context.clearRect(0, 0, rect.width, rect.height)
+      return
+    }
+
     let raf = 0
     const render = () => {
-      const canvas = gameCanvasRef.current
-      const context = canvas?.getContext("2d")
-      const rect = stageRef.current?.getBoundingClientRect()
-      if (!canvas || !context || !rect) return
-
-      if (mode === "game") {
-        if (!gameRuntimeRef.current || gameRuntimeRef.current.id !== miniGame) {
-          gameRuntimeRef.current = createMiniGameRuntime(miniGame)
-        }
-        const runtime = gameRuntimeRef.current
-        const hud = stepMiniGame(runtime, rect, latestSnapshotRef.current.pointer, isPinching(latestSnapshotRef.current))
-        if (runtime.frame % 3 === 0 || hud.status !== "playing") {
-          setGameHud(hud)
-        }
-        drawMiniGame(context, rect, runtime, latestSnapshotRef.current.pointer)
-      } else {
-        context.clearRect(0, 0, rect.width, rect.height)
+      const nextRect = stageRef.current?.getBoundingClientRect()
+      if (!nextRect) return
+      if (!gameRuntimeRef.current || gameRuntimeRef.current.id !== miniGame) {
+        gameRuntimeRef.current = createMiniGameRuntime(miniGame)
       }
+      const runtime = gameRuntimeRef.current
+      const hud = stepMiniGame(runtime, nextRect, latestSnapshotRef.current.pointer, isPinching(latestSnapshotRef.current))
+      if (runtime.frame % 3 === 0 || hud.status !== "playing") {
+        setGameHud(hud)
+      }
+      drawMiniGame(context, nextRect, runtime, latestSnapshotRef.current.pointer)
       raf = requestAnimationFrame(render)
     }
     raf = requestAnimationFrame(render)
@@ -1086,18 +1118,15 @@ export function InteractiveExperience() {
     }
   }
 
+  const animatedBackdropActive = !cameraPreviewActive && mode !== "effects" && mode !== "game" && mode !== "three"
+
   return (
     <main className="relative min-h-screen overflow-hidden bg-background text-foreground">
       <CustomCursor />
       <GrainOverlay />
 
       <div className="fixed inset-0 z-0" style={{ contain: "strict" }}>
-        <Shader className="absolute inset-0 h-full w-full opacity-100">
-          <Swirl colorA="#1275d8" colorB="#e19136" speed={0.8} detail={1.18} mixBlendMode="soft-light" />
-          <ChromaFlow baseColor="#0066ff" upColor="#0066ff" leftColor="#e19136" rightColor="#e19136" downColor="#d1d1d1" opacity={0.97} range={0.22} speed={0.1} scale={1.8} />
-        </Shader>
-        <div className="absolute inset-0 bg-[radial-gradient(circle_at_24%_16%,rgba(0,102,255,0.34),transparent_28%),radial-gradient(circle_at_82%_36%,rgba(225,145,54,0.30),transparent_30%),linear-gradient(180deg,rgba(0,0,0,0.22),rgba(0,0,0,0.78))]" />
-        <div className="absolute inset-0 bg-black/22" />
+        {animatedBackdropActive ? <AnimatedStageBackdrop /> : <StageBackdropFallback />}
       </div>
 
       <section className="relative z-10 flex min-h-screen flex-col px-4 py-4 md:px-6 lg:px-8">
@@ -1496,503 +1525,6 @@ function WeatherMetric({ label, value }: { label: string; value: string }) {
   )
 }
 
-function ImageModePanel({
-  images,
-  selectedImageId,
-  onSelect,
-  onNext,
-  onPrevious,
-  onReset,
-  onHide,
-  onZoomIn,
-  onZoomOut,
-}: {
-  images: FloatingImagePanel[]
-  selectedImageId: number
-  onSelect: (imageId: number) => void
-  onNext: () => void
-  onPrevious: () => void
-  onReset: () => void
-  onHide: () => void
-  onZoomIn: () => void
-  onZoomOut: () => void
-}) {
-  const selectedImage = images.find((image) => image.id === selectedImageId) ?? images[0]
-  const sortedImages = [...images].sort((left, right) => {
-    if (left.id === selectedImageId) return 1
-    if (right.id === selectedImageId) return -1
-    return left.id - right.id
-  })
-
-  return (
-    <div className="pointer-events-none absolute inset-0 z-[26]">
-      {sortedImages.map((image) => {
-        if (!image.visible) return null
-        const active = image.id === selectedImageId
-        const width = active ? 360 * image.scale : 260 * image.scale
-        return (
-          <button
-            key={image.id}
-            onClick={() => onSelect(image.id)}
-            className={`pointer-events-auto absolute overflow-hidden rounded-lg border bg-background/70 text-left shadow-2xl shadow-black/28 transition-all duration-300 ${
-              active ? "z-20 border-white/48 ring-2 ring-white/12" : "z-10 border-white/16 opacity-82 hover:opacity-100"
-            }`}
-            style={{
-              left: `${image.x * 100}%`,
-              top: `${image.y * 100}%`,
-              width: `${Math.round(width)}px`,
-              maxWidth: "min(72vw, 430px)",
-              transform: `translate(-50%, -50%) rotate(${image.rotation}deg)`,
-            }}
-            aria-label={`${image.title} 선택`}
-          >
-            <div className="relative aspect-[16/10] w-full">
-              <Image src={image.src} alt={image.title} fill sizes="430px" className="object-cover" priority={active} />
-              <div className="absolute inset-0 bg-[linear-gradient(180deg,transparent_54%,rgba(0,0,0,0.62))]" />
-              <div className="absolute bottom-0 left-0 right-0 p-3">
-                <p className="truncate text-sm font-semibold text-white">{image.title}</p>
-                <p className="mt-0.5 text-[10px] text-white/62">{active ? "선택됨 · 집기로 이동" : "클릭해서 선택"}</p>
-              </div>
-            </div>
-          </button>
-        )
-      })}
-
-      <div className="pointer-events-auto absolute bottom-4 left-4 w-[min(520px,calc(100%-32px))] rounded-lg border border-foreground/10 bg-background/72 p-3 shadow-lg shadow-black/20">
-        <div className="flex items-start justify-between gap-3">
-          <div className="min-w-0">
-            <p className="text-xs text-foreground/48">사진 패널 · 손 제어</p>
-            <h2 className="mt-1 truncate text-lg font-semibold">{selectedImage?.title ?? "사진 없음"}</h2>
-          </div>
-          <div className="flex shrink-0 items-center gap-2">
-            <IconButton label="이전 사진" onClick={onPrevious}>
-              <ChevronRight className="h-4 w-4 rotate-180" />
-            </IconButton>
-            <IconButton label="다음 사진" onClick={onNext}>
-              <ChevronRight className="h-4 w-4" />
-            </IconButton>
-          </div>
-        </div>
-        <div className="mt-3 flex flex-wrap items-center gap-2">
-          <IconButton label="확대" onClick={onZoomIn}>
-            <Plus className="h-4 w-4" />
-          </IconButton>
-          <IconButton label="축소" onClick={onZoomOut}>
-            <Minus className="h-4 w-4" />
-          </IconButton>
-          <IconButton label="숨기기" onClick={onHide}>
-            <Trash2 className="h-4 w-4" />
-          </IconButton>
-          <button
-            onClick={onReset}
-            className="inline-flex items-center gap-1.5 rounded-lg border border-foreground/8 bg-foreground/6 px-2.5 py-2 text-xs text-foreground/66 transition hover:bg-foreground/11 hover:text-foreground"
-          >
-            <RefreshCw className="h-3.5 w-3.5" />
-            재배치
-          </button>
-        </div>
-        <div className="mt-3 flex gap-2 overflow-x-auto pb-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
-          {images.map((image) => (
-            <button
-              key={image.id}
-              onClick={() => onSelect(image.id)}
-              className={`min-w-[120px] rounded-lg border p-2 text-left transition ${
-                image.id === selectedImageId
-                  ? "border-foreground/36 bg-foreground/14 text-foreground"
-                  : "border-foreground/8 bg-foreground/6 text-foreground/68 hover:border-foreground/20 hover:bg-foreground/11 hover:text-foreground"
-              }`}
-            >
-              <span className="mb-1.5 flex items-center gap-1.5 text-[10px] text-foreground/46">
-                <ImageIcon className="h-3 w-3" />
-                {image.visible ? "표시 중" : "숨김"}
-              </span>
-              <span className="block truncate text-xs font-semibold">{image.title}</span>
-            </button>
-          ))}
-        </div>
-      </div>
-    </div>
-  )
-}
-
-function IconButton({ label, onClick, children }: { label: string; onClick: () => void; children: ReactNode }) {
-  return (
-    <button
-      onClick={onClick}
-      className="grid h-9 w-9 place-items-center rounded-lg border border-foreground/12 bg-foreground/8 text-foreground/78 transition hover:bg-foreground/14 hover:text-foreground"
-      aria-label={label}
-      title={label}
-    >
-      {children}
-    </button>
-  )
-}
-
-const EffectPanel = memo(function EffectPanel({
-  activeEffect,
-  effectPower,
-  onPower,
-  onTrigger,
-}: {
-  activeEffect: EffectId
-  effectPower: number
-  onPower: (power: number) => void
-  onTrigger: (effect: EffectId) => void
-}) {
-  const definition = getEffectDefinition(activeEffect)
-  const powerOptions = [
-    { label: "절제", value: 0.7 },
-    { label: "표준", value: 1 },
-    { label: "강화", value: 1.35 },
-  ]
-
-  return (
-    <div className="absolute bottom-5 left-5 z-50 w-[min(560px,calc(100%-40px))] rounded-lg border border-foreground/10 bg-background/78 p-4 shadow-lg shadow-black/20">
-      <div className="grid gap-4">
-        <div>
-          <div className="flex items-start justify-between gap-3">
-            <div className="min-w-0">
-              <p className="text-xs text-foreground/48">시각 효과 시스템 · {definition.category}</p>
-              <h2 className="mt-1 truncate text-xl font-semibold">{definition.label}</h2>
-            </div>
-            <button
-              onClick={() => onTrigger(activeEffect)}
-              className="grid h-10 w-10 shrink-0 place-items-center rounded-lg border border-foreground/12 bg-foreground/10 text-foreground/82 transition hover:bg-foreground/16 hover:text-foreground"
-              aria-label={`${definition.label} 효과 실행`}
-            >
-              <Sparkles className="h-4 w-4" />
-            </button>
-          </div>
-          <p className="mt-3 text-sm leading-relaxed text-foreground/72">{definition.description}</p>
-          <div className="mt-3 grid gap-2 text-xs text-foreground/58">
-            <div className="flex items-center justify-between gap-3 rounded-lg border border-foreground/8 bg-foreground/6 px-3 py-2">
-              <span>움직임</span>
-              <span className="truncate text-foreground/78">{definition.motion}</span>
-            </div>
-            <div className="flex items-center justify-between gap-3 rounded-lg border border-foreground/8 bg-foreground/6 px-3 py-2">
-              <span>제스처</span>
-              <span className="truncate text-foreground/78">{definition.gestureHint}</span>
-            </div>
-          </div>
-          <div className="mt-3 flex flex-wrap items-center gap-2">
-            {powerOptions.map((option) => (
-              <button
-                key={option.value}
-                onClick={() => onPower(option.value)}
-                className={`rounded-lg border px-3 py-2 text-xs font-medium transition ${
-                  Math.abs(effectPower - option.value) < 0.01
-                    ? "border-foreground/36 bg-foreground/16 text-foreground"
-                    : "border-foreground/8 bg-foreground/6 text-foreground/66 hover:bg-foreground/11 hover:text-foreground"
-                }`}
-              >
-                {option.label}
-              </button>
-            ))}
-          </div>
-        </div>
-        <div className="flex gap-2 overflow-x-auto pb-1">
-          {EFFECT_DEFINITIONS.map((effect) => (
-            <button
-              key={effect.id}
-              onClick={() => onTrigger(effect.id)}
-              className={`min-w-[150px] rounded-lg border p-3 text-left transition ${
-                activeEffect === effect.id
-                  ? "border-foreground/36 bg-foreground/14 text-foreground shadow-lg shadow-black/18"
-                  : "border-foreground/8 bg-foreground/6 text-foreground/70 hover:border-foreground/20 hover:bg-foreground/11 hover:text-foreground"
-              }`}
-            >
-              <div className="mb-2 flex items-center gap-1.5">
-                {effect.colors.map((color) => (
-                  <span key={color} className="h-2.5 w-2.5 rounded-full border border-white/20" style={{ backgroundColor: color }} />
-                ))}
-              </div>
-              <p className="truncate text-sm font-semibold">{effect.label}</p>
-              <p className="mt-1 truncate text-[11px] text-foreground/48">{effect.category} · {effect.motion}</p>
-            </button>
-          ))}
-        </div>
-      </div>
-    </div>
-  )
-})
-
-function GamePanel({
-  definition,
-  hud,
-  selectedGame,
-  onSelect,
-  onRestart,
-  onNext,
-}: {
-  definition: ReturnType<typeof getMiniGameDefinition>
-  hud: MiniGameHudState
-  selectedGame: MiniGameId
-  onSelect: (game: MiniGameId) => void
-  onRestart: () => void
-  onNext: () => void
-}) {
-  const statusText = hud.status === "cleared" ? "클리어" : hud.status === "danger" ? "위험" : `라운드 ${hud.round}`
-  const [detailsOpen, setDetailsOpen] = useState(false)
-
-  return (
-    <div className="absolute bottom-5 left-5 z-50 w-[min(460px,calc(100%-40px))] rounded-lg border border-foreground/12 bg-background/40 p-3 shadow-2xl shadow-black/28 backdrop-blur-xl">
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        <div className="min-w-0">
-          <p className="text-xs text-foreground/58">제스처 미니게임 · {definition.skill}</p>
-          <h2 className="mt-1 truncate text-xl font-semibold">{definition.label}</h2>
-        </div>
-        <div className="flex items-center gap-2">
-          <button
-            onClick={() => setDetailsOpen((value) => !value)}
-            className={`grid h-9 w-9 place-items-center rounded-lg border transition ${
-              detailsOpen ? "border-foreground/36 bg-foreground/16 text-foreground" : "border-foreground/10 bg-foreground/8 text-foreground/76 hover:bg-foreground/14 hover:text-foreground"
-            }`}
-            aria-label={detailsOpen ? "게임 설명 닫기" : "게임 설명 열기"}
-          >
-            <HelpCircle className="h-4 w-4" />
-          </button>
-          <button
-            onClick={onRestart}
-            className="grid h-9 w-9 place-items-center rounded-lg border border-foreground/10 bg-foreground/8 text-foreground/76 transition hover:bg-foreground/14 hover:text-foreground"
-            aria-label="현재 게임 다시 시작"
-          >
-            <RefreshCw className="h-4 w-4" />
-          </button>
-          <button
-            onClick={onNext}
-            className="grid h-9 w-9 place-items-center rounded-lg border border-foreground/10 bg-foreground/8 text-foreground/76 transition hover:bg-foreground/14 hover:text-foreground"
-            aria-label="다음 게임"
-          >
-            <ChevronRight className="h-4 w-4" />
-          </button>
-        </div>
-      </div>
-      <div className="mt-3 grid grid-cols-4 gap-2">
-        <GameMetric icon={Trophy} label="점수" value={`${hud.score}`} />
-        <GameMetric icon={HeartPulse} label="기회" value={`${hud.lives}/3`} tone={hud.lives <= 1 ? "danger" : "default"} />
-        <GameMetric icon={Crosshair} label="콤보" value={`${hud.combo}x`} />
-        <GameMetric icon={Timer} label="남은 시간" value={`${hud.timeRemaining}s`} />
-      </div>
-      <div className="mt-3">
-        <div className="flex items-center justify-between gap-3 text-[11px] text-foreground/58">
-          <span>{statusText}</span>
-          <span>목표 {hud.targetScore} · 정확도 {hud.accuracy}% · 최고 {hud.bestCombo}x</span>
-        </div>
-        <div className="mt-2 h-2 overflow-hidden rounded-full bg-foreground/10">
-          <div className="h-full rounded-full transition-[width] duration-200" style={{ width: `${hud.progress * 100}%`, backgroundColor: definition.accent }} />
-        </div>
-      </div>
-      <p className="mt-2 truncate text-xs text-foreground/62">{hud.message}</p>
-      {detailsOpen ? (
-        <>
-          <div className="mt-3 rounded-lg border border-foreground/10 bg-foreground/7 p-3">
-            <p className="text-sm font-medium text-foreground/88">{definition.objective}</p>
-            <p className="mt-2 text-[11px] text-foreground/46">입력: {definition.inputHint} · 음성: {definition.command}</p>
-          </div>
-          <div className="mt-3 grid max-h-28 grid-cols-2 gap-2 overflow-y-auto pr-1 sm:grid-cols-3">
-            {MINI_GAME_DEFINITIONS.map((game) => (
-              <button
-                key={game.id}
-                onClick={() => {
-                  setDetailsOpen(false)
-                  onSelect(game.id)
-                }}
-                className={`rounded-lg border px-3 py-2 text-left transition ${
-                  selectedGame === game.id
-                    ? "border-foreground/36 bg-foreground/16 text-foreground"
-                    : "border-foreground/8 bg-foreground/6 text-foreground/68 hover:border-foreground/20 hover:bg-foreground/11 hover:text-foreground"
-                }`}
-              >
-                <span className="block truncate text-xs font-semibold">{game.label}</span>
-                <span className="mt-0.5 block truncate text-[10px] text-foreground/48">{game.skill}</span>
-              </button>
-            ))}
-          </div>
-        </>
-      ) : null}
-    </div>
-  )
-}
-
-function GameMetric({
-  icon: Icon,
-  label,
-  value,
-  tone = "default",
-}: {
-  icon: typeof Trophy
-  label: string
-  value: string
-  tone?: "default" | "danger"
-}) {
-  return (
-    <div className={`rounded-lg border px-3 py-2 ${tone === "danger" ? "border-rose-300/24 bg-rose-300/10" : "border-foreground/10 bg-foreground/7"}`}>
-      <div className="flex items-center gap-1.5 whitespace-nowrap text-[10px] text-foreground/48">
-        <Icon className="h-3 w-3" />
-        {label}
-      </div>
-      <p className="mt-1 text-lg font-semibold leading-none">{value}</p>
-    </div>
-  )
-}
-
-function ThreeObjectPanel({
-  visible,
-  scale,
-  snapshot,
-  sceneId,
-  quality,
-  onVisible,
-  onScene,
-  onQuality,
-  onResetScale,
-  onNextScene,
-}: {
-  visible: boolean
-  snapshot: GestureSnapshot
-  scale: number
-  sceneId: ThreeSceneId
-  quality: ThreeQuality
-  onVisible: (visible: boolean) => void
-  onScene: (scene: ThreeSceneId) => void
-  onQuality: (quality: ThreeQuality) => void
-  onResetScale: () => void
-  onNextScene: () => void
-}) {
-  const containerRef = useRef<HTMLDivElement>(null)
-  const runtimeRef = useRef<InteractiveThreeRuntime | null>(null)
-  const latestRef = useRef({ snapshot, scale, sceneId, quality, visible })
-  const [telemetry, setTelemetry] = useState<ThreeRuntimeTelemetry>({ calls: 0, triangles: 0, objects: 0 })
-  const definition = getThreeSceneDefinition(sceneId)
-
-  useEffect(() => {
-    latestRef.current = { snapshot, scale, sceneId, quality, visible }
-  }, [quality, scale, sceneId, snapshot, visible])
-
-  useEffect(() => {
-    if (!containerRef.current) return
-    let disposed = false
-    let raf = 0
-    let resizeObserver: ResizeObserver | null = null
-    let lastTelemetryAt = 0
-
-    const init = async () => {
-      const THREE = await import("three")
-      if (disposed || !containerRef.current) return
-      const runtime = new InteractiveThreeRuntime(THREE, containerRef.current, latestRef.current.sceneId, latestRef.current.quality)
-      runtimeRef.current = runtime
-      resizeObserver = new ResizeObserver(() => runtime.resize())
-      resizeObserver.observe(containerRef.current)
-
-      const animate = (timestamp: number) => {
-        const latest = latestRef.current
-        runtime.update({ ...latest, timestamp })
-        if (timestamp - lastTelemetryAt > 650) {
-          lastTelemetryAt = timestamp
-          setTelemetry(runtime.telemetry())
-        }
-        raf = requestAnimationFrame(animate)
-      }
-      raf = requestAnimationFrame(animate)
-    }
-
-    void init()
-    return () => {
-      disposed = true
-      cancelAnimationFrame(raf)
-      resizeObserver?.disconnect()
-      runtimeRef.current?.dispose()
-      runtimeRef.current = null
-    }
-  }, [])
-
-  return (
-    <div className="pointer-events-none absolute inset-0 z-[25]">
-      <div ref={containerRef} className={`absolute inset-0 transition-opacity duration-300 ${visible ? "opacity-100" : "opacity-0"}`} />
-      <div className="pointer-events-auto absolute bottom-4 left-4 w-[min(440px,calc(100%-32px))] rounded-lg border border-foreground/10 bg-background/72 p-3 shadow-lg shadow-black/20">
-        <div className="flex items-start justify-between gap-3">
-          <div className="min-w-0">
-            <p className="text-xs text-foreground/48">3D 씬 · {definition.gestureFocus}</p>
-            <h2 className="mt-1 truncate text-lg font-semibold">{definition.label}</h2>
-          </div>
-          <div className="flex shrink-0 items-center gap-2">
-            <button
-              onClick={onNextScene}
-              className="grid h-9 w-9 place-items-center rounded-lg border border-foreground/12 bg-foreground/8 text-foreground/78 transition hover:bg-foreground/14 hover:text-foreground"
-              aria-label="다음 3D 씬"
-            >
-              <ChevronRight className="h-4 w-4" />
-            </button>
-            <button
-              onClick={() => onVisible(!visible)}
-              className="grid h-9 w-9 place-items-center rounded-lg border border-foreground/12 bg-foreground/8 text-foreground/78 transition hover:bg-foreground/14 hover:text-foreground"
-              aria-label={visible ? "3D 숨기기" : "3D 표시"}
-            >
-              <Box className="h-4 w-4" />
-            </button>
-          </div>
-        </div>
-        <div className="mt-2 grid grid-cols-3 gap-2 text-xs">
-          <ThreeMetric label="배율" value={`${scale.toFixed(2)}x`} />
-          <ThreeMetric label="드로우콜" value={`${telemetry.calls}`} />
-          <ThreeMetric label="삼각형" value={compactNumber(telemetry.triangles)} />
-        </div>
-        <div className="mt-2 flex flex-wrap items-center gap-2">
-          {THREE_QUALITY_OPTIONS.map((option) => (
-            <button
-              key={option.id}
-              onClick={() => onQuality(option.id)}
-              className={`rounded-lg border px-2.5 py-1.5 text-xs font-medium transition ${
-                quality === option.id
-                  ? "border-foreground/36 bg-foreground/16 text-foreground"
-                  : "border-foreground/8 bg-foreground/6 text-foreground/66 hover:bg-foreground/11 hover:text-foreground"
-              }`}
-            >
-              {option.label}
-            </button>
-          ))}
-          <button
-            onClick={onResetScale}
-            className="inline-flex items-center gap-1.5 rounded-lg border border-foreground/8 bg-foreground/6 px-2.5 py-1.5 text-xs text-foreground/66 transition hover:bg-foreground/11 hover:text-foreground"
-          >
-            <RefreshCw className="h-3.5 w-3.5" />
-            초기화
-          </button>
-        </div>
-        <div className="mt-2 flex gap-2 overflow-x-auto pb-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
-          {THREE_SCENE_DEFINITIONS.map((scene) => (
-            <button
-              key={scene.id}
-              onClick={() => onScene(scene.id)}
-              className={`min-w-[116px] rounded-lg border p-2.5 text-left transition ${
-                sceneId === scene.id
-                  ? "border-foreground/36 bg-foreground/14 text-foreground shadow-lg shadow-black/18"
-                  : "border-foreground/8 bg-foreground/6 text-foreground/70 hover:border-foreground/20 hover:bg-foreground/11 hover:text-foreground"
-              }`}
-            >
-              <span className="mb-1.5 block h-2 w-7 rounded-full border border-white/20" style={{ backgroundColor: scene.accent }} />
-              <span className="block truncate text-xs font-semibold">{scene.label}</span>
-              <span className="mt-1 block truncate text-[11px] text-foreground/48">{scene.gestureFocus}</span>
-            </button>
-          ))}
-        </div>
-      </div>
-      <div className="pointer-events-none absolute right-5 top-28 rounded-lg border border-foreground/10 bg-background/48 px-3 py-2 text-xs text-foreground/64">
-        {visible ? `${snapshot.hands.length} hand · ${GESTURE_LABELS[snapshot.activeGesture]}` : "3D hidden"}
-      </div>
-    </div>
-  )
-}
-
-function ThreeMetric({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="rounded-lg border border-foreground/8 bg-foreground/6 px-2.5 py-1.5">
-      <p className="text-[10px] text-foreground/46">{label}</p>
-      <p className="mt-1 truncate text-sm font-semibold text-foreground/88">{value}</p>
-    </div>
-  )
-}
-
 function MusicPanel({
   playing,
   muted,
@@ -2249,12 +1781,6 @@ function smoothSnapshotPointer(snapshot: GestureSnapshot, pointerRef: { current:
     primaryHand,
     hands: snapshot.hands.map((hand) => (hand.id === primaryHand.id ? primaryHand : hand)),
   }
-}
-
-function compactNumber(value: number) {
-  if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1)}m`
-  if (value >= 1_000) return `${(value / 1_000).toFixed(1)}k`
-  return `${value}`
 }
 
 function clamp(value: number, min: number, max: number) {
