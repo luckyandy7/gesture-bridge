@@ -31,12 +31,12 @@ import {
   addBrowserKnnCustomLabel,
   addBrowserKnnTrainingSample,
   clearBrowserKnnCustomTraining,
+  createFaceExpressionTracker,
   loadBaseBrowserKnnModel,
   loadStoredBrowserKnnModel,
   normalizeBrowserKnnLabel,
   readBrowserKnnCustomTraining,
   predictSignSequence,
-  readFaceExpression,
   type BrowserKnnModel,
   type FaceExpression,
   type HolisticFeatureInput,
@@ -128,6 +128,9 @@ const EMPTY_EXPRESSION: FaceExpression = {
     negative: 0,
     emphasis: 0,
     mouthOpen: 0,
+    headShake: 0,
+    stability: 0,
+    calibration: 0,
   },
 }
 
@@ -143,6 +146,7 @@ export function SignTextExperience() {
   const predictionHistoryRef = useRef<Array<{ label: string; confidence: number; timestamp: number }>>([])
   const tokensRef = useRef<TokenRecord[]>([])
   const expressionRef = useRef<FaceExpression>(EMPTY_EXPRESSION)
+  const expressionTrackerRef = useRef(createFaceExpressionTracker())
   const frameIndexRef = useRef(0)
   const lastHolisticDetectAtRef = useRef(0)
   const lastExpressionUiAtRef = useRef(0)
@@ -204,6 +208,7 @@ export function SignTextExperience() {
   }, [syncModelUi])
 
   useEffect(() => {
+    const expressionTracker = expressionTrackerRef.current
     mountedRef.current = true
     setIsLoaded(true)
     void preloadResources()
@@ -211,6 +216,7 @@ export function SignTextExperience() {
       mountedRef.current = false
       streamRef.current?.getTracks().forEach((track) => track.stop())
       landmarkerRef.current?.close?.()
+      expressionTracker.reset()
       window.speechSynthesis?.cancel()
     }
   }, [preloadResources])
@@ -235,6 +241,7 @@ export function SignTextExperience() {
 
       setCameraActive(true)
       setCameraState("Holistic 모델 로딩")
+      expressionTrackerRef.current.reset()
 
       const vision = await import("@mediapipe/tasks-vision")
       const fileset = await vision.FilesetResolver.forVisionTasks("/mediapipe/wasm")
@@ -266,6 +273,7 @@ export function SignTextExperience() {
     landmarkerRef.current = null
     sequenceRef.current = []
     predictionHistoryRef.current = []
+    expressionTrackerRef.current.reset()
     lastHolisticDetectAtRef.current = 0
     lastExpressionUiAtRef.current = 0
     lastPredictionUiAtRef.current = 0
@@ -302,7 +310,8 @@ export function SignTextExperience() {
   const emitToken = useCallback(
     (label: string, confidence: number, sourceExpression = expressionRef.current) => {
       const now = performance.now()
-      if (now - (lastEmitRef.current[label] ?? 0) < 1450) return
+      const lastEmittedAt = lastEmitRef.current[label]
+      if (lastEmittedAt && now - lastEmittedAt < 1450) return
       const previous = tokensRef.current.at(-1)
       if (previous?.label === label && now - previous.timestamp < 2600) return
 
@@ -553,7 +562,11 @@ export function SignTextExperience() {
         try {
           const result = landmarker.detectForVideo(video, now)
           drawOverlay(result)
-          const nextExpression = readFaceExpression(result.faceBlendshapes, Boolean(result.faceLandmarks?.[0]?.length))
+          const nextExpression = expressionTrackerRef.current.read({
+            blendshapes: result.faceBlendshapes,
+            faceLandmarks: result.faceLandmarks?.[0],
+            timestamp: now,
+          })
           const previousExpression = expressionRef.current
           expressionRef.current = nextExpression
           if (nextExpression.label !== previousExpression.label || now - lastExpressionUiAtRef.current >= SIGN_UI_STATE_INTERVAL_MS) {
@@ -763,8 +776,11 @@ export function SignTextExperience() {
               <div className="mt-5 grid gap-3">
                 <Metric label="얼굴 표정" value={expression.label} percent={expression.confidence} />
                 <Metric label="웃음" value={`${Math.round(expression.scores.smile * 100)}%`} percent={expression.scores.smile} />
-                <Metric label="질문/강조" value={`${Math.round(Math.max(expression.scores.question, expression.scores.emphasis) * 100)}%`} percent={Math.max(expression.scores.question, expression.scores.emphasis)} />
+                <Metric label="질문" value={`${Math.round(expression.scores.question * 100)}%`} percent={expression.scores.question} />
+                <Metric label="강조" value={`${Math.round(expression.scores.emphasis * 100)}%`} percent={expression.scores.emphasis} />
                 <Metric label="부정" value={`${Math.round(expression.scores.negative * 100)}%`} percent={expression.scores.negative} />
+                <Metric label="고개 좌우" value={`${Math.round((expression.scores.headShake ?? 0) * 100)}%`} percent={expression.scores.headShake ?? 0} />
+                <Metric label="안정도" value={`${Math.round((expression.scores.stability ?? 0) * 100)}%`} percent={expression.scores.stability ?? 0} />
               </div>
             </Panel>
 

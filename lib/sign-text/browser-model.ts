@@ -16,6 +16,9 @@ export type FaceExpression = {
     negative: number
     emphasis: number
     mouthOpen: number
+    headShake?: number
+    stability?: number
+    calibration?: number
   }
 }
 
@@ -70,6 +73,20 @@ export type BlendshapeResult = {
   categories?: BlendshapeCategory[]
 }
 
+type FaceExpressionTone = FaceExpression["tone"]
+
+type FaceExpressionCandidate = {
+  label: string
+  tone: FaceExpressionTone
+  confidence: number
+}
+
+type ExpressionFrame = {
+  timestamp: number
+  scores: Required<FaceExpression["scores"]>
+  yaw: number | null
+}
+
 const EMPTY_FACE_EXPRESSION: FaceExpression = {
   label: "표정 대기",
   tone: "neutral",
@@ -80,12 +97,19 @@ const EMPTY_FACE_EXPRESSION: FaceExpression = {
     negative: 0,
     emphasis: 0,
     mouthOpen: 0,
+    headShake: 0,
+    stability: 0,
+    calibration: 0,
   },
 }
 
 const SIGN_POSE_INDICES = [11, 12, 13, 14, 15, 16]
 const CUSTOM_TRAINING_STORAGE_KEY = "gesture-bridge.sign-text.custom-training.v1"
 const CUSTOM_TRAINING_MAX_SAMPLES = 120
+const EXPRESSION_CALIBRATION_MS = 900
+const EXPRESSION_WINDOW_MS = 850
+const EXPRESSION_SWITCH_FRAMES = 2
+const EXPRESSION_NEUTRAL_FRAMES = 4
 
 export async function loadBaseBrowserKnnModel(path = "/models/sign_knn.browser.json") {
   const response = await fetch(path)
@@ -274,35 +298,171 @@ export function predictSignSequence(model: BrowserKnnModel, sequence: number[][]
 }
 
 export function readFaceExpression(blendshapes?: BlendshapeResult[], hasFace = true): FaceExpression {
-  if (!hasFace || !blendshapes?.[0]?.categories?.length) return EMPTY_FACE_EXPRESSION
+  const raw = readRawExpressionScores(blendshapes, hasFace)
+  if (!raw) return EMPTY_FACE_EXPRESSION
+  return classifyExpression(raw)
+}
+
+export function createFaceExpressionTracker() {
+  let calibrationStartAt = 0
+  let calibrationFrames: Required<FaceExpression["scores"]>[] = []
+  let baseline: Required<FaceExpression["scores"]> | null = null
+  let frames: ExpressionFrame[] = []
+  let stableTone: FaceExpressionTone = "neutral"
+  let stableLabel = "중립 표정"
+  let candidateTone: FaceExpressionTone = "neutral"
+  let candidateFrames = 0
+  let neutralFrames = 0
+  let missingFrames = 0
+
+  const reset = () => {
+    calibrationStartAt = 0
+    calibrationFrames = []
+    baseline = null
+    frames = []
+    stableTone = "neutral"
+    stableLabel = "중립 표정"
+    candidateTone = "neutral"
+    candidateFrames = 0
+    neutralFrames = 0
+    missingFrames = 0
+  }
+
+  const read = ({
+    blendshapes,
+    faceLandmarks,
+    timestamp,
+  }: {
+    blendshapes?: BlendshapeResult[]
+    faceLandmarks?: Landmark3D[]
+    timestamp: number
+  }): FaceExpression => {
+    const raw = readRawExpressionScores(blendshapes, Boolean(faceLandmarks?.length))
+    if (!raw) {
+      missingFrames += 1
+      if (missingFrames > 6) reset()
+      return EMPTY_FACE_EXPRESSION
+    }
+
+    missingFrames = 0
+    if (!calibrationStartAt) calibrationStartAt = timestamp
+
+    if (!baseline) {
+      calibrationFrames.push(raw)
+      const progress = clamp((timestamp - calibrationStartAt) / EXPRESSION_CALIBRATION_MS, 0, 1)
+      if (progress >= 1 || calibrationFrames.length >= 18) {
+        baseline = averageExpressionScores(calibrationFrames)
+      } else {
+        return {
+          label: "중립 캘리브레이션",
+          tone: "neutral",
+          confidence: progress,
+          scores: { ...raw, calibration: progress, stability: 0 },
+        }
+      }
+    }
+
+    const yaw = estimateFaceYaw(faceLandmarks)
+    const adjusted = adjustExpressionScores(raw, baseline)
+    frames = [...frames, { timestamp, scores: adjusted, yaw }].filter((frame) => timestamp - frame.timestamp <= EXPRESSION_WINDOW_MS)
+
+    const headShake = readHeadShake(frames)
+    const smoothed = averageExpressionScores(frames.map((frame) => frame.scores))
+    smoothed.headShake = headShake
+    smoothed.negative = clamp(smoothed.negative * 0.68 + headShake * 0.46, 0, 1)
+    smoothed.calibration = 1
+
+    const ranked = rankExpressionScores(smoothed)
+    const top = ranked[0]
+    const runnerUp = ranked[1]
+    const topConfidence = top?.confidence ?? 0
+    const margin = topConfidence - (runnerUp?.confidence ?? 0)
+
+    if (!top || topConfidence < 0.18) {
+      neutralFrames += 1
+      if (neutralFrames >= EXPRESSION_NEUTRAL_FRAMES) {
+        stableTone = "neutral"
+        stableLabel = "중립 표정"
+      }
+    } else {
+      neutralFrames = 0
+      if (top.tone !== candidateTone) {
+        candidateTone = top.tone
+        candidateFrames = 1
+      } else {
+        candidateFrames += 1
+      }
+
+      const canSwitch = candidateFrames >= EXPRESSION_SWITCH_FRAMES && topConfidence >= 0.26 && (margin >= 0.035 || top.tone === stableTone)
+      if (canSwitch) {
+        stableTone = top.tone
+        stableLabel = top.label
+      }
+    }
+    smoothed.stability = readExpressionStability(frames, stableTone === "neutral" ? top?.tone ?? "neutral" : stableTone)
+
+    if (stableTone === "neutral") {
+      return {
+        label: "중립 표정",
+        tone: "neutral",
+        confidence: clamp(1 - topConfidence, 0.24, 1),
+        scores: smoothed,
+      }
+    }
+
+    const stable = ranked.find((item) => item.tone === stableTone) ?? top
+    return {
+      label: stableLabel,
+      tone: stableTone,
+      confidence: stable?.confidence ?? 0,
+      scores: smoothed,
+    }
+  }
+
+  return { read, reset }
+}
+
+function readRawExpressionScores(blendshapes?: BlendshapeResult[], hasFace = true): Required<FaceExpression["scores"]> | null {
+  if (!hasFace || !blendshapes?.[0]?.categories?.length) return null
 
   const scores = new Map<string, number>()
   blendshapes[0].categories.forEach((category) => {
     scores.set(category.categoryName ?? category.displayName ?? "", category.score ?? 0)
   })
 
-  const smile = average(score(scores, "mouthSmileLeft"), score(scores, "mouthSmileRight"))
+  const smile = symmetric(score(scores, "mouthSmileLeft"), score(scores, "mouthSmileRight"))
+  const cheekSquint = symmetric(score(scores, "cheekSquintLeft"), score(scores, "cheekSquintRight"))
   const browInnerUp = score(scores, "browInnerUp")
-  const eyeWide = average(score(scores, "eyeWideLeft"), score(scores, "eyeWideRight"))
-  const browDown = average(score(scores, "browDownLeft"), score(scores, "browDownRight"))
-  const mouthFrown = average(score(scores, "mouthFrownLeft"), score(scores, "mouthFrownRight"))
+  const browOuterUp = symmetric(score(scores, "browOuterUpLeft"), score(scores, "browOuterUpRight"))
+  const eyeWide = symmetric(score(scores, "eyeWideLeft"), score(scores, "eyeWideRight"))
+  const eyeSquint = symmetric(score(scores, "eyeSquintLeft"), score(scores, "eyeSquintRight"))
+  const browDown = symmetric(score(scores, "browDownLeft"), score(scores, "browDownRight"))
+  const mouthFrown = symmetric(score(scores, "mouthFrownLeft"), score(scores, "mouthFrownRight"))
   const jawOpen = score(scores, "jawOpen")
   const mouthPucker = score(scores, "mouthPucker")
+  const mouthPress = symmetric(score(scores, "mouthPressLeft"), score(scores, "mouthPressRight"))
+  const mouthStretch = symmetric(score(scores, "mouthStretchLeft"), score(scores, "mouthStretchRight"))
+  const mouthUpperUp = symmetric(score(scores, "mouthUpperUpLeft"), score(scores, "mouthUpperUpRight"))
+  const mouthLowerDown = symmetric(score(scores, "mouthLowerDownLeft"), score(scores, "mouthLowerDownRight"))
+  const mouthShrug = average(score(scores, "mouthShrugLower"), score(scores, "mouthShrugUpper"))
+  const noseSneer = symmetric(score(scores, "noseSneerLeft"), score(scores, "noseSneerRight"))
 
-  const expressionScores = {
-    smile,
-    question: clamp(browInnerUp * 0.65 + eyeWide * 0.35, 0, 1),
-    negative: clamp(browDown * 0.55 + mouthFrown * 0.45, 0, 1),
-    emphasis: clamp(jawOpen * 0.68 + mouthPucker * 0.32, 0, 1),
+  return {
+    smile: clamp(smile * 0.82 + cheekSquint * 0.18, 0, 1),
+    question: clamp(browInnerUp * 0.42 + browOuterUp * 0.2 + eyeWide * 0.26 + jawOpen * 0.12, 0, 1),
+    negative: clamp(browDown * 0.3 + mouthFrown * 0.28 + mouthPress * 0.12 + mouthShrug * 0.12 + noseSneer * 0.1 + eyeSquint * 0.08, 0, 1),
+    emphasis: clamp(jawOpen * 0.42 + mouthPucker * 0.18 + mouthPress * 0.12 + mouthStretch * 0.13 + mouthUpperUp * 0.08 + mouthLowerDown * 0.07, 0, 1),
     mouthOpen: jawOpen,
+    headShake: 0,
+    stability: 0,
+    calibration: 1,
   }
+}
 
+function classifyExpression(expressionScores: Required<FaceExpression["scores"]>): FaceExpression {
   const ranked = [
-    { label: "질문 표정", tone: "question" as const, confidence: expressionScores.question },
-    { label: "부정/긴장 표정", tone: "negative" as const, confidence: expressionScores.negative },
-    { label: "강조 표정", tone: "emphasis" as const, confidence: expressionScores.emphasis },
-    { label: "긍정 표정", tone: "positive" as const, confidence: expressionScores.smile },
-  ].sort((left, right) => right.confidence - left.confidence)
+    ...rankExpressionScores(expressionScores),
+  ]
 
   const top = ranked[0]
   if (!top || top.confidence < 0.22) {
@@ -310,6 +470,85 @@ export function readFaceExpression(blendshapes?: BlendshapeResult[], hasFace = t
   }
 
   return { ...top, scores: expressionScores }
+}
+
+function rankExpressionScores(scores: Required<FaceExpression["scores"]>): FaceExpressionCandidate[] {
+  const candidates: FaceExpressionCandidate[] = [
+    { label: "질문 표정", tone: "question", confidence: scores.question },
+    { label: "부정/긴장 표정", tone: "negative", confidence: scores.negative },
+    { label: "강조 표정", tone: "emphasis", confidence: scores.emphasis },
+    { label: "긍정 표정", tone: "positive", confidence: scores.smile },
+  ]
+  return candidates.sort((left, right) => right.confidence - left.confidence)
+}
+
+function adjustExpressionScores(current: Required<FaceExpression["scores"]>, baseline: Required<FaceExpression["scores"]>): Required<FaceExpression["scores"]> {
+  return {
+    smile: liftExpressionScore(current.smile, baseline.smile, 1.42),
+    question: liftExpressionScore(current.question, baseline.question, 1.48),
+    negative: liftExpressionScore(current.negative, baseline.negative, 1.5),
+    emphasis: liftExpressionScore(current.emphasis, baseline.emphasis, 1.36),
+    mouthOpen: liftExpressionScore(current.mouthOpen, baseline.mouthOpen, 1.28),
+    headShake: 0,
+    stability: 0,
+    calibration: 1,
+  }
+}
+
+function liftExpressionScore(value: number, baseline: number, gain: number) {
+  return clamp((value - baseline * 0.72) * gain, 0, 1)
+}
+
+function averageExpressionScores(items: Required<FaceExpression["scores"]>[]): Required<FaceExpression["scores"]> {
+  if (!items.length) {
+    return {
+      smile: 0,
+      question: 0,
+      negative: 0,
+      emphasis: 0,
+      mouthOpen: 0,
+      headShake: 0,
+      stability: 0,
+      calibration: 0,
+    }
+  }
+
+  return {
+    smile: mean(items, "smile"),
+    question: mean(items, "question"),
+    negative: mean(items, "negative"),
+    emphasis: mean(items, "emphasis"),
+    mouthOpen: mean(items, "mouthOpen"),
+    headShake: mean(items, "headShake"),
+    stability: mean(items, "stability"),
+    calibration: mean(items, "calibration"),
+  }
+}
+
+function readHeadShake(frames: ExpressionFrame[]) {
+  const yawValues = frames.map((frame) => frame.yaw).filter((value): value is number => typeof value === "number" && Number.isFinite(value))
+  if (yawValues.length < 4) return 0
+  const min = Math.min(...yawValues)
+  const max = Math.max(...yawValues)
+  return clamp((max - min - 0.11) / 0.22, 0, 1)
+}
+
+function readExpressionStability(frames: ExpressionFrame[], tone: FaceExpressionTone) {
+  if (tone === "neutral" || !frames.length) return 0
+  const key = tone === "positive" ? "smile" : tone
+  const values = frames.map((frame) => frame.scores[key])
+  const averageValue = values.reduce((sum, value) => sum + value, 0) / values.length
+  const variance = values.reduce((sum, value) => sum + Math.abs(value - averageValue), 0) / values.length
+  return clamp(1 - variance * 4.2, 0, 1)
+}
+
+function estimateFaceYaw(faceLandmarks?: Landmark3D[]) {
+  const leftEye = faceLandmarks?.[33]
+  const rightEye = faceLandmarks?.[263]
+  const nose = faceLandmarks?.[1] ?? faceLandmarks?.[4]
+  if (!leftEye || !rightEye || !nose) return null
+  const eyeDistance = Math.max(Math.abs(rightEye.x - leftEye.x), 1e-5)
+  return (nose.x - (leftEye.x + rightEye.x) / 2) / eyeDistance
 }
 
 export function hasEnoughHolisticSignal(input: HolisticFeatureInput) {
@@ -427,6 +666,14 @@ function score(scores: Map<string, number>, key: string) {
 
 function average(left: number, right: number) {
   return (left + right) / 2
+}
+
+function symmetric(left: number, right: number) {
+  return clamp(average(left, right) * 0.75 + Math.max(left, right) * 0.25, 0, 1)
+}
+
+function mean(items: Required<FaceExpression["scores"]>[], key: keyof Required<FaceExpression["scores"]>) {
+  return items.reduce((sum, item) => sum + item[key], 0) / items.length
 }
 
 function distance2d(left: number[], right: number[]) {

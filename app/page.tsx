@@ -2,6 +2,7 @@
 
 import Image from "next/image"
 import Link from "next/link"
+import dynamic from "next/dynamic"
 import { useEffect, useRef, useState } from "react"
 import {
   Activity,
@@ -21,6 +22,11 @@ import { GrainOverlay } from "@/components/grain-overlay"
 import { MagneticButton } from "@/components/magnetic-button"
 
 type ModeKey = "pc-control" | "sign-text" | "interactive"
+
+const AnimatedHomeBackdrop = dynamic(() => import("@/components/home/AnimatedHomeBackdrop").then((module) => module.AnimatedHomeBackdrop), {
+  ssr: false,
+  loading: () => <HomeBackdropFallback />,
+})
 
 const navItems = ["선택", "PC 제어", "수화 텍스트", "인터랙티브", "실행 준비"]
 
@@ -236,7 +242,7 @@ export default function Home() {
         className={`fixed inset-0 z-0 transition-opacity duration-700 ${isLoaded ? "opacity-100" : "opacity-0"}`}
         style={{ contain: "strict" }}
       >
-        <HomeBackdropFallback />
+        <AnimatedHomeBackdrop />
       </div>
 
       <nav
