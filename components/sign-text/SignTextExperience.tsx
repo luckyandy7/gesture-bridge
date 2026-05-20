@@ -4,7 +4,6 @@ import Image from "next/image"
 import Link from "next/link"
 import type React from "react"
 import { useCallback, useEffect, useRef, useState } from "react"
-import { Shader, ChromaFlow, Swirl } from "shaders/react"
 import {
   ArrowLeft,
   AudioLines,
@@ -22,6 +21,7 @@ import {
   Trash2,
   Undo2,
 } from "lucide-react"
+import { SignTextBackdropFallback } from "@/components/sign-text/SignTextBackdropFallback"
 import { CustomCursor } from "@/components/custom-cursor"
 import { GrainOverlay } from "@/components/grain-overlay"
 import {
@@ -112,6 +112,9 @@ const POSE_CONNECTIONS = [
 ] as const
 
 const SAMPLE_TOKENS = ["안녕하세요", "감사합니다", "네", "아니요"]
+const HOLISTIC_TRACKING_INTERVAL_MS = 1000 / 18
+const SIGN_UI_STATE_INTERVAL_MS = 1000 / 10
+const FINISH_PROGRESS_INTERVAL_MS = 1000 / 15
 
 const EMPTY_EXPRESSION: FaceExpression = {
   label: "표정 대기",
@@ -139,6 +142,11 @@ export function SignTextExperience() {
   const tokensRef = useRef<TokenRecord[]>([])
   const expressionRef = useRef<FaceExpression>(EMPTY_EXPRESSION)
   const frameIndexRef = useRef(0)
+  const lastHolisticDetectAtRef = useRef(0)
+  const lastExpressionUiAtRef = useRef(0)
+  const lastPredictionUiAtRef = useRef(0)
+  const lastFinishUiAtRef = useRef(0)
+  const finishProgressRef = useRef(0)
   const lastEmitRef = useRef<Record<string, number>>({})
   const finishHoldStartRef = useRef<number | null>(null)
   const finishArmedRef = useRef(true)
@@ -214,7 +222,7 @@ export function SignTextExperience() {
     try {
       setCameraState("카메라 권한 요청")
       const stream = await navigator.mediaDevices.getUserMedia({
-        video: { width: 1280, height: 720, facingMode: "user" },
+        video: { width: { ideal: 960 }, height: { ideal: 540 }, facingMode: "user" },
         audio: false,
       })
       streamRef.current = stream
@@ -228,21 +236,31 @@ export function SignTextExperience() {
 
       const vision = await import("@mediapipe/tasks-vision")
       const fileset = await vision.FilesetResolver.forVisionTasks("/mediapipe/wasm")
-      landmarkerRef.current = await vision.HolisticLandmarker.createFromOptions(fileset, {
-        baseOptions: {
-          modelAssetPath: "/models/holistic_landmarker.task",
-          delegate: "CPU",
-        },
-        runningMode: "VIDEO",
-        outputFaceBlendshapes: true,
-        minFaceDetectionConfidence: 0.5,
-        minFacePresenceConfidence: 0.5,
-        minPoseDetectionConfidence: 0.5,
-        minPosePresenceConfidence: 0.5,
-        minHandLandmarksConfidence: 0.5,
-      })
+      const createLandmarker = (delegate: "GPU" | "CPU") =>
+        vision.HolisticLandmarker.createFromOptions(fileset, {
+          baseOptions: {
+            modelAssetPath: "/models/holistic_landmarker.task",
+            delegate,
+          },
+          runningMode: "VIDEO",
+          outputFaceBlendshapes: true,
+          minFaceDetectionConfidence: 0.5,
+          minFacePresenceConfidence: 0.5,
+          minPoseDetectionConfidence: 0.5,
+          minPosePresenceConfidence: 0.5,
+          minHandLandmarksConfidence: 0.5,
+        })
 
-      setCameraState("손+얼굴 추적 중")
+      try {
+        setCameraState("GPU Holistic 모델 로딩")
+        landmarkerRef.current = await createLandmarker("GPU")
+        setCameraState("GPU 손+얼굴 추적 중")
+      } catch (gpuError) {
+        console.warn("GPU holistic tracking initialization failed. Falling back to CPU.", gpuError)
+        setCameraState("GPU 실패, CPU 재시도")
+        landmarkerRef.current = await createLandmarker("CPU")
+        setCameraState("CPU 손+얼굴 추적 중")
+      }
     } catch (error) {
       console.error(error)
       setCameraState("카메라 또는 Holistic 시작 실패")
@@ -257,6 +275,11 @@ export function SignTextExperience() {
     landmarkerRef.current = null
     sequenceRef.current = []
     predictionHistoryRef.current = []
+    lastHolisticDetectAtRef.current = 0
+    lastExpressionUiAtRef.current = 0
+    lastPredictionUiAtRef.current = 0
+    lastFinishUiAtRef.current = 0
+    finishProgressRef.current = 0
     setCameraActive(false)
     setCameraState("카메라 대기")
     setCurrentPrediction(null)
@@ -490,13 +513,20 @@ export function SignTextExperience() {
       if (!finishActive) {
         finishHoldStartRef.current = null
         finishArmedRef.current = true
-        setFinishProgress(0)
+        if (finishProgressRef.current !== 0) {
+          finishProgressRef.current = 0
+          setFinishProgress(0)
+        }
         return
       }
 
       if (!finishHoldStartRef.current) finishHoldStartRef.current = now
       const progress = Math.min(1, (now - finishHoldStartRef.current) / 1050)
-      setFinishProgress(progress)
+      if (now - lastFinishUiAtRef.current >= FINISH_PROGRESS_INTERVAL_MS || progress >= 1) {
+        lastFinishUiAtRef.current = now
+        finishProgressRef.current = progress
+        setFinishProgress(progress)
+      }
       if (progress >= 1 && finishArmedRef.current) {
         finishArmedRef.current = false
         void finalizeSentence("gesture")
@@ -506,6 +536,13 @@ export function SignTextExperience() {
   )
 
   useEffect(() => {
+    if (!cameraActive) {
+      const canvas = overlayCanvasRef.current
+      const context = canvas?.getContext("2d")
+      if (canvas && context) context.clearRect(0, 0, canvas.width, canvas.height)
+      return
+    }
+
     let raf = 0
 
     const loop = () => {
@@ -516,14 +553,25 @@ export function SignTextExperience() {
       const now = performance.now()
 
       if (video && landmarker && model && video.readyState >= 2) {
+        if (now - lastHolisticDetectAtRef.current < HOLISTIC_TRACKING_INTERVAL_MS) {
+          raf = requestAnimationFrame(loop)
+          return
+        }
+        lastHolisticDetectAtRef.current = now
+
         try {
           const result = landmarker.detectForVideo(video, now)
           drawOverlay(result)
           const nextExpression = readFaceExpression(result.faceBlendshapes, Boolean(result.faceLandmarks?.[0]?.length))
+          const previousExpression = expressionRef.current
           expressionRef.current = nextExpression
-          setExpression(nextExpression)
+          if (nextExpression.label !== previousExpression.label || now - lastExpressionUiAtRef.current >= SIGN_UI_STATE_INTERVAL_MS) {
+            lastExpressionUiAtRef.current = now
+            setExpression(nextExpression)
+          }
 
-          if (hasEnoughHolisticSignal(result)) {
+          const hasSignal = hasEnoughHolisticSignal(result)
+          if (hasSignal) {
             sequenceRef.current.push(flattenHolisticFrameFeatures(result))
             if (sequenceRef.current.length > model.sequenceLength) {
               sequenceRef.current = sequenceRef.current.slice(-model.sequenceLength)
@@ -537,13 +585,15 @@ export function SignTextExperience() {
             frameIndexRef.current += 1
             if (frameIndexRef.current % 4 === 0) {
               const prediction = applyExpressionContext(predictSignSequence(model, sequenceRef.current), nextExpression)
+              lastPredictionUiAtRef.current = now
               setCurrentPrediction(prediction)
               const stable = updateStablePrediction(prediction, now)
               if (stable) emitToken(stable.label, stable.confidence, nextExpression)
             }
-          } else {
+          } else if (now - lastPredictionUiAtRef.current >= SIGN_UI_STATE_INTERVAL_MS) {
+            lastPredictionUiAtRef.current = now
             setCurrentPrediction({
-              label: hasEnoughHolisticSignal(result) ? "버퍼링" : "대기",
+              label: hasSignal ? "버퍼링" : "대기",
               confidence: model.sequenceLength ? sequenceRef.current.length / model.sequenceLength : 0,
               alternatives: [],
             })
@@ -563,7 +613,7 @@ export function SignTextExperience() {
 
     raf = requestAnimationFrame(loop)
     return () => cancelAnimationFrame(raf)
-  }, [emitToken, updateFinishSignal, updateStablePrediction])
+  }, [cameraActive, emitToken, updateFinishSignal, updateStablePrediction])
 
   const drawOverlay = (result: HolisticResultLike) => {
     const canvas = overlayCanvasRef.current
@@ -602,12 +652,7 @@ export function SignTextExperience() {
       <GrainOverlay />
 
       <div className={`fixed inset-0 z-0 transition-opacity duration-700 ${isLoaded ? "opacity-100" : "opacity-0"}`} style={{ contain: "strict" }}>
-        <Shader className="h-full w-full">
-          <Swirl colorA="#1275d8" colorB="#e19136" speed={0.7} detail={0.74} blend={46} coarseX={40} coarseY={40} mediumX={40} mediumY={40} fineX={40} fineY={40} />
-          <ChromaFlow baseColor="#0066ff" upColor="#0066ff" downColor="#d1d1d1" leftColor="#e19136" rightColor="#e19136" intensity={0.82} radius={1.7} momentum={22} maskType="alpha" opacity={0.94} />
-        </Shader>
-        <div className="absolute inset-0 bg-black/54" />
-        <div className="absolute inset-0 bg-[radial-gradient(circle_at_20%_24%,rgba(18,117,216,0.48),transparent_32%),radial-gradient(circle_at_80%_42%,rgba(225,145,54,0.42),transparent_30%)]" />
+        <SignTextBackdropFallback />
       </div>
 
       <section className="relative z-10 flex min-h-screen flex-col px-4 py-4 md:px-6 lg:px-8">

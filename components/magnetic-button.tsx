@@ -1,7 +1,7 @@
 "use client"
 
 import type React from "react"
-import { useRef } from "react"
+import { useEffect, useRef } from "react"
 
 interface MagneticButtonProps {
   children: React.ReactNode
@@ -22,8 +22,18 @@ export function MagneticButton({
   const positionRef = useRef({ x: 0, y: 0 })
   const rafRef = useRef<number | null>(null)
 
+  useEffect(() => {
+    return () => {
+      if (rafRef.current) cancelAnimationFrame(rafRef.current)
+    }
+  }, [])
+
+  const shouldSkipMagneticMotion = () => {
+    return window.matchMedia("(prefers-reduced-motion: reduce)").matches || window.matchMedia("(pointer: coarse)").matches
+  }
+
   const handleMouseMove = (e: React.MouseEvent<HTMLButtonElement>) => {
-    if (!ref.current) return
+    if (!ref.current || shouldSkipMagneticMotion()) return
 
     const rect = ref.current.getBoundingClientRect()
     const x = e.clientX - rect.left - rect.width / 2
@@ -40,6 +50,7 @@ export function MagneticButton({
   }
 
   const handleMouseLeave = () => {
+    if (shouldSkipMagneticMotion()) return
     positionRef.current = { x: 0, y: 0 }
     if (rafRef.current) cancelAnimationFrame(rafRef.current)
     rafRef.current = requestAnimationFrame(() => {

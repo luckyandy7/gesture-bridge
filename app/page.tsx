@@ -3,7 +3,6 @@
 import Image from "next/image"
 import Link from "next/link"
 import { useEffect, useRef, useState } from "react"
-import { Shader, ChromaFlow, Swirl } from "shaders/react"
 import {
   Activity,
   Camera,
@@ -16,6 +15,7 @@ import {
   Subtitles,
   Terminal,
 } from "lucide-react"
+import { HomeBackdropFallback } from "@/components/home/HomeBackdropFallback"
 import { CustomCursor } from "@/components/custom-cursor"
 import { GrainOverlay } from "@/components/grain-overlay"
 import { MagneticButton } from "@/components/magnetic-button"
@@ -80,39 +80,10 @@ export default function Home() {
   const scrollThrottleRef = useRef<number | null>(null)
   const touchStartY = useRef(0)
   const touchStartX = useRef(0)
-  const shaderContainerRef = useRef<HTMLDivElement>(null)
   const [currentSection, setCurrentSection] = useState(0)
   const [selectedMode, setSelectedMode] = useState<ModeKey>("pc-control")
-  const [isLoaded, setIsLoaded] = useState(true)
+  const isLoaded = true
   const [copiedCommand, setCopiedCommand] = useState("")
-
-  useEffect(() => {
-    const checkShaderReady = () => {
-      const canvas = shaderContainerRef.current?.querySelector("canvas")
-      if (canvas && canvas.width > 0 && canvas.height > 0) {
-        setIsLoaded(true)
-        return true
-      }
-      return false
-    }
-
-    if (checkShaderReady()) return
-
-    const intervalId = window.setInterval(() => {
-      if (checkShaderReady()) {
-        window.clearInterval(intervalId)
-      }
-    }, 100)
-
-    const fallbackTimer = window.setTimeout(() => {
-      setIsLoaded(true)
-    }, 1500)
-
-    return () => {
-      window.clearInterval(intervalId)
-      window.clearTimeout(fallbackTimer)
-    }
-  }, [])
 
   const scrollToSection = (index: number) => {
     if (!scrollContainerRef.current) return
@@ -262,45 +233,10 @@ export default function Home() {
       <GrainOverlay />
 
       <div
-        ref={shaderContainerRef}
         className={`fixed inset-0 z-0 transition-opacity duration-700 ${isLoaded ? "opacity-100" : "opacity-0"}`}
         style={{ contain: "strict" }}
       >
-        <Shader className="h-full w-full">
-          <Swirl
-            colorA="#1275d8"
-            colorB="#e19136"
-            speed={0.8}
-            detail={0.8}
-            blend={50}
-            coarseX={40}
-            coarseY={40}
-            mediumX={40}
-            mediumY={40}
-            fineX={40}
-            fineY={40}
-          />
-          <ChromaFlow
-            baseColor="#0066ff"
-            upColor="#0066ff"
-            downColor="#d1d1d1"
-            leftColor="#e19136"
-            rightColor="#e19136"
-            intensity={0.9}
-            radius={1.8}
-            momentum={25}
-            maskType="alpha"
-            opacity={0.97}
-          />
-        </Shader>
-        <div
-          className="absolute inset-0 opacity-85 mix-blend-screen"
-          style={{
-            backgroundImage:
-              "radial-gradient(circle at 20% 24%, rgba(18, 117, 216, 0.78), transparent 34%), radial-gradient(circle at 78% 38%, rgba(225, 145, 54, 0.72), transparent 32%), linear-gradient(120deg, rgba(0, 102, 255, 0.42), rgba(209, 209, 209, 0.18) 46%, rgba(225, 145, 54, 0.5))",
-          }}
-        />
-        <div className="absolute inset-0 bg-black/20" />
+        <HomeBackdropFallback />
       </div>
 
       <nav

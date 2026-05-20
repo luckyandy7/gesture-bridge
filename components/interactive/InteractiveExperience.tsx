@@ -87,11 +87,6 @@ const CosmicParticlePlayground = dynamic(() => import("@/components/interactive/
   loading: () => null,
 })
 
-const AnimatedStageBackdrop = dynamic(() => import("@/components/interactive/AnimatedStageBackdrop").then((module) => module.AnimatedStageBackdrop), {
-  ssr: false,
-  loading: () => <StageBackdropFallback />,
-})
-
 const SatoruTechniquePanel = dynamic(() => import("@/components/interactive/SatoruTechniquePanel").then((module) => module.SatoruTechniquePanel), {
   ssr: false,
   loading: () => null,
@@ -435,11 +430,19 @@ export function InteractiveExperience() {
   const saveDrawing = useCallback(() => {
     const canvas = drawingCanvasRef.current
     if (!canvas) return
-    const anchor = document.createElement("a")
-    anchor.href = canvas.toDataURL("image/png")
-    anchor.download = `air-drawing-${Date.now()}.png`
-    anchor.click()
-    addLog("그림을 PNG 이미지로 저장했습니다.", "success")
+    canvas.toBlob((blob) => {
+      if (!blob) {
+        addLog("그림 저장에 실패했습니다.", "warning")
+        return
+      }
+      const anchor = document.createElement("a")
+      const url = URL.createObjectURL(blob)
+      anchor.href = url
+      anchor.download = `air-drawing-${Date.now()}.png`
+      anchor.click()
+      URL.revokeObjectURL(url)
+      addLog("그림을 PNG 이미지로 저장했습니다.", "success")
+    }, "image/png")
   }, [addLog])
 
   const clearDrawingCanvas = useCallback(
@@ -755,7 +758,7 @@ export function InteractiveExperience() {
 
     try {
       setCameraState("카메라 권한 요청 중")
-      const stream = await navigator.mediaDevices.getUserMedia({ video: { width: 1280, height: 720, facingMode: "user" }, audio: false })
+      const stream = await navigator.mediaDevices.getUserMedia({ video: { width: { ideal: 960 }, height: { ideal: 540 }, facingMode: "user" }, audio: false })
       streamRef.current = stream
       if (videoRef.current) {
         videoRef.current.srcObject = stream
@@ -1118,15 +1121,13 @@ export function InteractiveExperience() {
     }
   }
 
-  const animatedBackdropActive = !cameraPreviewActive && mode !== "effects" && mode !== "game" && mode !== "three"
-
   return (
     <main className="relative min-h-screen overflow-hidden bg-background text-foreground">
       <CustomCursor />
       <GrainOverlay />
 
       <div className="fixed inset-0 z-0" style={{ contain: "strict" }}>
-        {animatedBackdropActive ? <AnimatedStageBackdrop /> : <StageBackdropFallback />}
+        <StageBackdropFallback />
       </div>
 
       <section className="relative z-10 flex min-h-screen flex-col px-4 py-4 md:px-6 lg:px-8">

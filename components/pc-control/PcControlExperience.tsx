@@ -88,6 +88,9 @@ const ACTION_COOLDOWN_MS: Record<ControlAction, number> = {
   scroll_down: 450,
 }
 
+const HAND_TRACKING_INTERVAL_MS = 1000 / 30
+const PC_CONTROL_UI_INTERVAL_MS = 1000 / 20
+
 const SLIDES = [
   {
     title: "Gesture Bridge",
@@ -131,6 +134,9 @@ export function PcControlExperience() {
   const pointerRef = useRef<Point>({ x: 0.5, y: 0.5 })
   const pointerDownRef = useRef(false)
   const mountedRef = useRef(false)
+  const latestSnapshotRef = useRef<GestureSnapshot>(createEmptyGestureSnapshot())
+  const lastHandDetectAtRef = useRef(0)
+  const lastSnapshotUiAtRef = useRef(0)
   const lastActionAtRef = useRef<Record<string, number>>({})
   const logIdRef = useRef(1)
 
@@ -166,7 +172,7 @@ export function PcControlExperience() {
 
     try {
       setCameraState("카메라 권한 요청")
-      const stream = await navigator.mediaDevices.getUserMedia({ video: { width: 1280, height: 720, facingMode: "user" }, audio: false })
+      const stream = await navigator.mediaDevices.getUserMedia({ video: { width: { ideal: 960 }, height: { ideal: 540 }, facingMode: "user" }, audio: false })
       streamRef.current = stream
       if (videoRef.current) {
         videoRef.current.srcObject = stream
@@ -178,17 +184,28 @@ export function PcControlExperience() {
       setCameraState("손 추적 모델 로딩")
       const vision = await import("@mediapipe/tasks-vision")
       const fileset = await vision.FilesetResolver.forVisionTasks("/mediapipe/wasm")
-      landmarkerRef.current = await vision.HandLandmarker.createFromOptions(fileset, {
-        baseOptions: {
-          modelAssetPath: "/models/hand_landmarker.task",
-          delegate: "CPU",
-        },
-        runningMode: "VIDEO",
-        numHands: 2,
-      })
+      const createLandmarker = (delegate: "GPU" | "CPU") =>
+        vision.HandLandmarker.createFromOptions(fileset, {
+          baseOptions: {
+            modelAssetPath: "/models/hand_landmarker.task",
+            delegate,
+          },
+          runningMode: "VIDEO",
+          numHands: 2,
+        })
 
-      setCameraState("손 추적 중")
-      addLog("카메라", "MediaPipe Hands 웹 추적을 시작했습니다.", "success")
+      try {
+        setCameraState("GPU 손 추적 모델 로딩")
+        landmarkerRef.current = await createLandmarker("GPU")
+        setCameraState("GPU 손 추적 중")
+        addLog("카메라", "GPU MediaPipe Hands 웹 추적을 시작했습니다.", "success")
+      } catch (gpuError) {
+        console.warn("GPU hand tracking initialization failed. Falling back to CPU.", gpuError)
+        setCameraState("GPU 실패, CPU 재시도")
+        landmarkerRef.current = await createLandmarker("CPU")
+        setCameraState("CPU 손 추적 중")
+        addLog("카메라", "GPU 초기화 실패로 CPU 손 추적을 시작했습니다.", "warning")
+      }
     } catch (error) {
       console.error(error)
       const hasCameraStream = Boolean(streamRef.current)
@@ -205,6 +222,9 @@ export function PcControlExperience() {
     landmarkerRef.current?.close?.()
     landmarkerRef.current = null
     smoothedPointerRef.current = null
+    latestSnapshotRef.current = createEmptyGestureSnapshot()
+    lastHandDetectAtRef.current = 0
+    lastSnapshotUiAtRef.current = 0
     setCameraPreviewActive(false)
     setTrackingMode("simulation")
     setCameraState("마우스 시뮬레이션")
@@ -304,34 +324,50 @@ export function PcControlExperience() {
     const loop = () => {
       if (!mountedRef.current) return
       const now = performance.now()
-      let nextSnapshot = createSimulationSnapshot(pointerRef.current, pointerDownRef.current ? "pinch" : "point", now)
+      let shouldProcessSnapshot = trackingMode === "simulation"
+      let nextSnapshot =
+        trackingMode === "camera"
+          ? latestSnapshotRef.current
+          : createSimulationSnapshot(pointerRef.current, pointerDownRef.current ? "pinch" : "point", now)
 
       const video = videoRef.current
       const landmarker = landmarkerRef.current
       if (trackingMode === "camera" && video && landmarker && video.readyState >= 2) {
-        try {
-          const result = landmarker.detectForVideo(video, now)
-          const recognized = recognizeGestureSnapshot({
-            landmarks: result.landmarks ?? [],
-            handednesses: result.handednesses,
-            previousHistory: gestureHistoryRef.current,
-            previousTwoHandDistance: previousTwoHandDistanceRef.current,
-            timestamp: now,
-          })
-          gestureHistoryRef.current = recognized.history
-          previousTwoHandDistanceRef.current = recognized.snapshot.twoHandDistance
-          if (recognized.snapshot.hands.length > 0) {
-            nextSnapshot = smoothSnapshotPointer(mirrorSnapshotForStage(recognized.snapshot, video, desktopRef.current?.getBoundingClientRect()), smoothedPointerRef)
-          } else {
-            smoothedPointerRef.current = null
+        if (now - lastHandDetectAtRef.current >= HAND_TRACKING_INTERVAL_MS) {
+          lastHandDetectAtRef.current = now
+          shouldProcessSnapshot = true
+          try {
+            const result = landmarker.detectForVideo(video, now)
+            const recognized = recognizeGestureSnapshot({
+              landmarks: result.landmarks ?? [],
+              handednesses: result.handednesses,
+              previousHistory: gestureHistoryRef.current,
+              previousTwoHandDistance: previousTwoHandDistanceRef.current,
+              timestamp: now,
+            })
+            gestureHistoryRef.current = recognized.history
+            previousTwoHandDistanceRef.current = recognized.snapshot.twoHandDistance
+            if (recognized.snapshot.hands.length > 0) {
+              nextSnapshot = smoothSnapshotPointer(mirrorSnapshotForStage(recognized.snapshot, video, desktopRef.current?.getBoundingClientRect()), smoothedPointerRef)
+            } else {
+              smoothedPointerRef.current = null
+              nextSnapshot = recognized.snapshot
+            }
+            latestSnapshotRef.current = nextSnapshot
+          } catch {
+            setCameraState("손 추적 재시도")
           }
-        } catch {
-          setCameraState("손 추적 재시도")
         }
       }
 
-      dispatchControlAction(nextSnapshot)
-      setSnapshot({ ...nextSnapshot })
+      if (shouldProcessSnapshot) {
+        if (trackingMode === "simulation") latestSnapshotRef.current = nextSnapshot
+        dispatchControlAction(nextSnapshot)
+        if (now - lastSnapshotUiAtRef.current >= PC_CONTROL_UI_INTERVAL_MS) {
+          lastSnapshotUiAtRef.current = now
+          setSnapshot({ ...nextSnapshot })
+        }
+      }
       raf = requestAnimationFrame(loop)
     }
 
