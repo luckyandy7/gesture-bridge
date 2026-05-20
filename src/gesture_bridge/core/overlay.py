@@ -33,6 +33,9 @@ def _require_pillow():
 @lru_cache(maxsize=1)
 def _overlay_font_path() -> str | None:
     candidates = (
+        "C:/Windows/Fonts/malgun.ttf",
+        "C:/Windows/Fonts/malgunbd.ttf",
+        "C:/Windows/Fonts/gulim.ttc",
         "/System/Library/Fonts/AppleSDGothicNeo.ttc",
         "/System/Library/Fonts/Supplemental/AppleGothic.ttf",
         "/System/Library/Fonts/Supplemental/Arial Unicode.ttf",
