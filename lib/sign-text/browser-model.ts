@@ -51,6 +51,13 @@ export type BrowserKnnCustomTraining = {
   updatedAt: string
 }
 
+export type SharedBrowserKnnTrainingPayload = {
+  model: BrowserKnnModel
+  sharedSampleCount: number
+  sharedLabels: string[]
+  updatedAt: string | null
+}
+
 export type SignPrediction = {
   label: string
   confidence: number
@@ -122,6 +129,40 @@ export async function loadBaseBrowserKnnModel(path = "/models/sign_knn.browser.j
 export async function loadBrowserKnnModel(path = "/models/sign_knn.browser.json") {
   const baseModel = await loadBaseBrowserKnnModel(path)
   return loadStoredBrowserKnnModel(baseModel)
+}
+
+export async function loadSharedBrowserKnnModel(path = "/api/sign-text/training") {
+  const response = await fetch(path, { cache: "no-store" })
+  if (!response.ok) {
+    throw new Error(`Failed to load shared sign model: ${response.status}`)
+  }
+  return parseSharedBrowserKnnTrainingPayload(await response.json())
+}
+
+export async function addSharedBrowserKnnCustomLabel(label: string) {
+  return writeSharedBrowserKnnTraining({
+    action: "add-label",
+    label,
+  })
+}
+
+export async function addSharedBrowserKnnTrainingSample(label: string, sequence: number[][]) {
+  return writeSharedBrowserKnnTraining({
+    action: "add-sample",
+    label,
+    sequence,
+  })
+}
+
+export async function clearSharedBrowserKnnTraining() {
+  const response = await fetch("/api/sign-text/training", {
+    method: "DELETE",
+    cache: "no-store",
+  })
+  if (!response.ok) {
+    throw new Error(await readSharedTrainingError(response))
+  }
+  return parseSharedBrowserKnnTrainingPayload(await response.json())
 }
 
 export function loadStoredBrowserKnnModel(baseModel: BrowserKnnModel) {
@@ -209,6 +250,54 @@ export function addBrowserKnnTrainingSample(baseModel: BrowserKnnModel, label: s
 export function clearBrowserKnnCustomTraining() {
   if (typeof window === "undefined") return
   window.localStorage.removeItem(CUSTOM_TRAINING_STORAGE_KEY)
+}
+
+async function writeSharedBrowserKnnTraining(payload: Record<string, unknown>) {
+  const response = await fetch("/api/sign-text/training", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    cache: "no-store",
+    body: JSON.stringify(payload),
+  })
+  if (!response.ok) {
+    throw new Error(await readSharedTrainingError(response))
+  }
+  return parseSharedBrowserKnnTrainingPayload(await response.json())
+}
+
+async function readSharedTrainingError(response: Response) {
+  const payload = (await response.json().catch(() => null)) as { error?: string } | null
+  return payload?.error ?? `공유 학습 요청 실패 (${response.status})`
+}
+
+function parseSharedBrowserKnnTrainingPayload(payload: unknown): SharedBrowserKnnTrainingPayload {
+  const candidate = payload as Partial<SharedBrowserKnnTrainingPayload> | null
+  if (!candidate || !isBrowserKnnModel(candidate.model)) {
+    throw new Error("공유 학습 모델 응답 형식이 올바르지 않습니다.")
+  }
+  return {
+    model: candidate.model,
+    sharedSampleCount: Number.isFinite(candidate.sharedSampleCount) ? Number(candidate.sharedSampleCount) : 0,
+    sharedLabels: Array.isArray(candidate.sharedLabels) ? candidate.sharedLabels.filter((label): label is string => typeof label === "string") : [],
+    updatedAt: typeof candidate.updatedAt === "string" ? candidate.updatedAt : null,
+  }
+}
+
+function isBrowserKnnModel(model: unknown): model is BrowserKnnModel {
+  const candidate = model as BrowserKnnModel | null
+  return Boolean(
+    candidate &&
+      Array.isArray(candidate.labels) &&
+      Array.isArray(candidate.classes) &&
+      Array.isArray(candidate.samples) &&
+      Array.isArray(candidate.sampleLabels) &&
+      Array.isArray(candidate.scalerMean) &&
+      Array.isArray(candidate.scalerScale) &&
+      Number.isFinite(candidate.sequenceLength) &&
+      Number.isFinite(candidate.featureSize) &&
+      Number.isFinite(candidate.flatFeatureSize) &&
+      candidate.samples.length === candidate.sampleLabels.length,
+  )
 }
 
 export function getBrowserKnnLabelCounts(model: BrowserKnnModel) {
@@ -552,9 +641,8 @@ function estimateFaceYaw(faceLandmarks?: Landmark3D[]) {
 }
 
 export function hasEnoughHolisticSignal(input: HolisticFeatureInput) {
-  const hasPose = Boolean(input.poseLandmarks?.[0]?.length)
   const hasHand = Boolean(input.leftHandLandmarks?.[0]?.length || input.rightHandLandmarks?.[0]?.length)
-  return hasPose && hasHand
+  return hasHand
 }
 
 function pointsToArray(points?: Landmark3D[]) {

@@ -25,17 +25,15 @@ import { SignTextBackdropFallback } from "@/components/sign-text/SignTextBackdro
 import { CustomCursor } from "@/components/custom-cursor"
 import { GrainOverlay } from "@/components/grain-overlay"
 import {
+  addSharedBrowserKnnCustomLabel,
+  addSharedBrowserKnnTrainingSample,
+  clearSharedBrowserKnnTraining,
   flattenHolisticFrameFeatures,
   getBrowserKnnLabelCounts,
   hasEnoughHolisticSignal,
-  addBrowserKnnCustomLabel,
-  addBrowserKnnTrainingSample,
-  clearBrowserKnnCustomTraining,
   createFaceExpressionTracker,
-  loadBaseBrowserKnnModel,
-  loadStoredBrowserKnnModel,
+  loadSharedBrowserKnnModel,
   normalizeBrowserKnnLabel,
-  readBrowserKnnCustomTraining,
   predictSignSequence,
   type BrowserKnnModel,
   type FaceExpression,
@@ -117,6 +115,7 @@ const SAMPLE_TOKENS = ["안녕하세요", "감사합니다", "네", "아니요"]
 const HOLISTIC_TRACKING_INTERVAL_MS = 1000 / 24
 const SIGN_UI_STATE_INTERVAL_MS = 1000 / 10
 const FINISH_PROGRESS_INTERVAL_MS = 1000 / 15
+const TRAINING_CAPTURE_FRAMES = 45
 
 const EMPTY_EXPRESSION: FaceExpression = {
   label: "표정 대기",
@@ -147,11 +146,16 @@ export function SignTextExperience() {
   const tokensRef = useRef<TokenRecord[]>([])
   const expressionRef = useRef<FaceExpression>(EMPTY_EXPRESSION)
   const expressionTrackerRef = useRef(createFaceExpressionTracker())
+  const pendingTrainingLabelRef = useRef("")
+  const trainingSequenceRef = useRef<number[][]>([])
+  const sharedTrainingCountRef = useRef(0)
+  const trainingSaveInFlightRef = useRef(false)
   const frameIndexRef = useRef(0)
   const lastHolisticDetectAtRef = useRef(0)
   const lastExpressionUiAtRef = useRef(0)
   const lastPredictionUiAtRef = useRef(0)
   const lastFinishUiAtRef = useRef(0)
+  const lastTrainingUiAtRef = useRef(0)
   const finishProgressRef = useRef(0)
   const lastEmitRef = useRef<Record<string, number>>({})
   const finishHoldStartRef = useRef<number | null>(null)
@@ -178,29 +182,28 @@ export function SignTextExperience() {
   const [labelCounts, setLabelCounts] = useState<Array<{ label: string; count: number }>>([])
   const [trainingLabel, setTrainingLabel] = useState("")
   const [selectedTrainingLabel, setSelectedTrainingLabel] = useState("")
-  const [trainingMessage, setTrainingMessage] = useState("라벨을 추가한 뒤 카메라 앞에서 같은 동작을 유지하고 샘플을 학습하세요.")
-  const [customTrainingCount, setCustomTrainingCount] = useState(0)
+  const [trainingMessage, setTrainingMessage] = useState("라벨과 샘플은 서버 공유 학습 데이터로 저장되어 다른 브라우저에서도 같이 사용됩니다.")
+  const [sharedTrainingCount, setSharedTrainingCount] = useState(0)
 
-  const syncModelUi = useCallback((model: BrowserKnnModel, message?: string) => {
-    const custom = readBrowserKnnCustomTraining(baseModelRef.current)
+  const syncModelUi = useCallback((model: BrowserKnnModel, message?: string, sharedSampleCount = sharedTrainingCountRef.current) => {
     const counts = getBrowserKnnLabelCounts(model)
     setAvailableLabels(model.labels)
     setLabelCounts(counts)
-    setCustomTrainingCount(custom?.samples.length ?? 0)
+    setSharedTrainingCount(sharedSampleCount)
     setSelectedTrainingLabel((previous) => (previous && model.labels.includes(previous) ? previous : model.labels[0] ?? ""))
-    setModelState(`웹 KNN 준비 (${model.labels.length} labels · ${model.samples.length} samples)`)
+    setModelState(`공유 KNN 준비 (${model.labels.length} labels · ${model.samples.length} samples)`)
     if (message) setTrainingMessage(message)
   }, [])
 
   const preloadResources = useCallback(async () => {
     try {
-      setModelState("문장 메모리 로딩")
-      const [baseModel, memory] = await Promise.all([loadBaseBrowserKnnModel(), loadSentenceMemory()])
-      const model = loadStoredBrowserKnnModel(baseModel)
-      baseModelRef.current = baseModel
-      modelRef.current = model
+      setModelState("공유 학습 모델 로딩")
+      const [training, memory] = await Promise.all([loadSharedBrowserKnnModel(), loadSentenceMemory()])
+      baseModelRef.current = training.model
+      modelRef.current = training.model
       memoryRef.current = memory
-      syncModelUi(model)
+      sharedTrainingCountRef.current = training.sharedSampleCount
+      syncModelUi(training.model, undefined, training.sharedSampleCount)
     } catch (error) {
       console.error(error)
       setModelState("웹 모델 로딩 실패")
@@ -273,11 +276,15 @@ export function SignTextExperience() {
     landmarkerRef.current = null
     sequenceRef.current = []
     predictionHistoryRef.current = []
+    pendingTrainingLabelRef.current = ""
+    trainingSequenceRef.current = []
+    trainingSaveInFlightRef.current = false
     expressionTrackerRef.current.reset()
     lastHolisticDetectAtRef.current = 0
     lastExpressionUiAtRef.current = 0
     lastPredictionUiAtRef.current = 0
     lastFinishUiAtRef.current = 0
+    lastTrainingUiAtRef.current = 0
     finishProgressRef.current = 0
     setCameraActive(false)
     setCameraState("카메라 대기")
@@ -418,6 +425,9 @@ export function SignTextExperience() {
     tokensRef.current = []
     sequenceRef.current = []
     predictionHistoryRef.current = []
+    pendingTrainingLabelRef.current = ""
+    trainingSequenceRef.current = []
+    trainingSaveInFlightRef.current = false
     setTokens([])
     setCurrentPrediction(null)
     setDraftSentence("-")
@@ -425,25 +435,65 @@ export function SignTextExperience() {
     setLlmState("LLM 대기")
   }, [])
 
-  const addTrainingLabel = useCallback(() => {
-    const baseModel = baseModelRef.current
-    if (!baseModel) {
+  const addTrainingLabel = useCallback(async () => {
+    if (!modelRef.current) {
       setTrainingMessage("기본 모델이 아직 로딩되지 않았습니다.")
       return
     }
 
     try {
       const label = normalizeBrowserKnnLabel(trainingLabel)
-      const nextModel = addBrowserKnnCustomLabel(baseModel, label)
-      modelRef.current = nextModel
+      const training = await addSharedBrowserKnnCustomLabel(label)
+      baseModelRef.current = training.model
+      modelRef.current = training.model
+      sharedTrainingCountRef.current = training.sharedSampleCount
       setTrainingLabel("")
       setSelectedTrainingLabel(label)
       predictionHistoryRef.current = []
-      syncModelUi(nextModel, `"${label}" 라벨을 추가했습니다. 같은 동작을 여러 번 학습하면 안정도가 올라갑니다.`)
+      syncModelUi(training.model, `"${label}" 공유 라벨을 추가했습니다. 같은 동작을 여러 번 학습하면 안정도가 올라갑니다.`, training.sharedSampleCount)
     } catch (error) {
       setTrainingMessage(error instanceof Error ? error.message : "라벨 추가에 실패했습니다.")
     }
   }, [syncModelUi, trainingLabel])
+
+  const saveTrainingSample = useCallback(
+    async (label: string, sequence: number[][]) => {
+      const model = modelRef.current
+      if (!model) {
+        setTrainingMessage("기본 모델이 아직 로딩되지 않았습니다.")
+        return false
+      }
+      if (trainingSaveInFlightRef.current) return false
+      const requiredFrames = Math.max(TRAINING_CAPTURE_FRAMES, model.sequenceLength)
+      if (sequence.length < requiredFrames) {
+        setTrainingMessage(`"${label}" 샘플 수집 중... ${sequence.length}/${requiredFrames}프레임`)
+        return false
+      }
+
+      trainingSaveInFlightRef.current = true
+      setTrainingMessage(`"${label}" 공유 샘플 저장 중...`)
+      try {
+        const training = await addSharedBrowserKnnTrainingSample(label, sequence)
+        baseModelRef.current = training.model
+        modelRef.current = training.model
+        predictionHistoryRef.current = []
+        pendingTrainingLabelRef.current = ""
+        trainingSequenceRef.current = []
+        sharedTrainingCountRef.current = training.sharedSampleCount
+        const nextCount = getBrowserKnnLabelCounts(training.model).find((item) => item.label === label)?.count ?? 0
+        syncModelUi(training.model, `"${label}" 공유 샘플을 저장했습니다. 현재 이 라벨 샘플 ${nextCount}개입니다.`, training.sharedSampleCount)
+        return true
+      } catch (error) {
+        pendingTrainingLabelRef.current = ""
+        trainingSequenceRef.current = []
+        setTrainingMessage(error instanceof Error ? error.message : "샘플 학습에 실패했습니다.")
+        return false
+      } finally {
+        trainingSaveInFlightRef.current = false
+      }
+    },
+    [syncModelUi],
+  )
 
   const captureTrainingSample = useCallback(() => {
     const baseModel = baseModelRef.current
@@ -456,34 +506,35 @@ export function SignTextExperience() {
       setTrainingMessage("학습할 라벨을 먼저 선택하세요.")
       return
     }
-    if (sequenceRef.current.length < baseModel.sequenceLength) {
-      setTrainingMessage(`샘플 버퍼가 부족합니다. 현재 ${sequenceRef.current.length}/${baseModel.sequenceLength}프레임입니다.`)
+    if (!cameraActive) {
+      setTrainingMessage("웹 실행을 켠 뒤 손동작을 카메라에 보이면서 샘플을 학습하세요.")
+      return
+    }
+    pendingTrainingLabelRef.current = label
+    trainingSequenceRef.current = []
+    lastTrainingUiAtRef.current = 0
+    setTrainingMessage(`"${label}" 새 샘플 수집 시작... 0/${Math.max(TRAINING_CAPTURE_FRAMES, baseModel.sequenceLength)}프레임`)
+  }, [cameraActive, selectedTrainingLabel])
+
+  const resetCustomTraining = useCallback(async () => {
+    if (!modelRef.current) {
+      setTrainingMessage("기본 모델이 아직 로딩되지 않았습니다.")
       return
     }
 
     try {
-      const nextModel = addBrowserKnnTrainingSample(baseModel, label, sequenceRef.current)
-      modelRef.current = nextModel
+      const training = await clearSharedBrowserKnnTraining()
+      baseModelRef.current = training.model
+      modelRef.current = training.model
+      sharedTrainingCountRef.current = training.sharedSampleCount
       sequenceRef.current = []
       predictionHistoryRef.current = []
-      const nextCount = getBrowserKnnLabelCounts(nextModel).find((item) => item.label === label)?.count ?? 0
-      syncModelUi(nextModel, `"${label}" 샘플을 학습했습니다. 현재 이 라벨 샘플 ${nextCount}개입니다.`)
+      pendingTrainingLabelRef.current = ""
+      trainingSequenceRef.current = []
+      syncModelUi(training.model, "공유 학습 라벨과 샘플을 초기화했습니다.", training.sharedSampleCount)
     } catch (error) {
-      setTrainingMessage(error instanceof Error ? error.message : "샘플 학습에 실패했습니다.")
+      setTrainingMessage(error instanceof Error ? error.message : "공유 학습 초기화에 실패했습니다.")
     }
-  }, [selectedTrainingLabel, syncModelUi])
-
-  const resetCustomTraining = useCallback(() => {
-    const baseModel = baseModelRef.current
-    if (!baseModel) {
-      setTrainingMessage("기본 모델이 아직 로딩되지 않았습니다.")
-      return
-    }
-    clearBrowserKnnCustomTraining()
-    modelRef.current = baseModel
-    sequenceRef.current = []
-    predictionHistoryRef.current = []
-    syncModelUi(baseModel, "사용자 추가 라벨과 샘플을 초기화했습니다.")
   }, [syncModelUi])
 
   const updateStablePrediction = useCallback((prediction: SignPrediction, now: number) => {
@@ -576,13 +627,31 @@ export function SignTextExperience() {
 
           const hasSignal = hasEnoughHolisticSignal(result)
           if (hasSignal) {
-            sequenceRef.current.push(flattenHolisticFrameFeatures(result))
+            const frameFeatures = flattenHolisticFrameFeatures(result)
+            sequenceRef.current.push(frameFeatures)
             if (sequenceRef.current.length > model.sequenceLength) {
               sequenceRef.current = sequenceRef.current.slice(-model.sequenceLength)
+            }
+            const pendingTrainingLabel = pendingTrainingLabelRef.current
+            if (pendingTrainingLabel && !trainingSaveInFlightRef.current) {
+              const requiredTrainingFrames = Math.max(TRAINING_CAPTURE_FRAMES, model.sequenceLength)
+              if (trainingSequenceRef.current.length < requiredTrainingFrames) {
+                trainingSequenceRef.current = [...trainingSequenceRef.current, frameFeatures]
+                const trainingFrameCount = trainingSequenceRef.current.length
+                lastTrainingUiAtRef.current = now
+                setTrainingMessage(`"${pendingTrainingLabel}" 샘플 수집 중... ${trainingFrameCount}/${requiredTrainingFrames}프레임`)
+              }
+              if (trainingSequenceRef.current.length >= requiredTrainingFrames) {
+                void saveTrainingSample(pendingTrainingLabel, trainingSequenceRef.current.slice(-requiredTrainingFrames))
+              }
             }
           } else {
             sequenceRef.current = []
             predictionHistoryRef.current = []
+            if (pendingTrainingLabelRef.current && now - lastTrainingUiAtRef.current >= 500) {
+              lastTrainingUiAtRef.current = now
+              setTrainingMessage(`손이 잡히지 않습니다. 현재 ${trainingSequenceRef.current.length}/${Math.max(TRAINING_CAPTURE_FRAMES, model.sequenceLength)}프레임입니다.`)
+            }
           }
 
           if (sequenceRef.current.length === model.sequenceLength) {
@@ -617,7 +686,7 @@ export function SignTextExperience() {
 
     raf = requestAnimationFrame(loop)
     return () => cancelAnimationFrame(raf)
-  }, [cameraActive, emitToken, updateFinishSignal, updateStablePrediction])
+  }, [cameraActive, emitToken, saveTrainingSample, updateFinishSignal, updateStablePrediction])
 
   const drawOverlay = (result: HolisticResultLike) => {
     const canvas = overlayCanvasRef.current
@@ -815,8 +884,8 @@ export function SignTextExperience() {
             <Panel>
               <div className="mb-3 flex items-start justify-between gap-4">
                 <div>
-                  <p className="text-xs text-foreground/48">브라우저 학습</p>
-                  <h2 className="mt-1 text-lg font-semibold">라벨 추가 · 샘플 학습</h2>
+                  <p className="text-xs text-foreground/48">공유 웹 학습</p>
+                  <h2 className="mt-1 text-lg font-semibold">공유 라벨 · 샘플 학습</h2>
                 </div>
                 <Database className="h-5 w-5 text-foreground/58" />
               </div>
@@ -867,10 +936,10 @@ export function SignTextExperience() {
               </div>
 
               <div className="mt-3 flex items-center justify-between gap-3 border-t border-foreground/10 pt-3 text-xs text-foreground/52">
-                <span>사용자 샘플 {customTrainingCount}개</span>
+                <span>공유 샘플 {sharedTrainingCount}개</span>
                 <button onClick={resetCustomTraining} className="inline-flex items-center gap-1.5 text-foreground/58 transition hover:text-foreground">
                   <Trash2 className="h-3.5 w-3.5" />
-                  사용자 학습 초기화
+                  공유 학습 초기화
                 </button>
               </div>
             </Panel>
