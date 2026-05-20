@@ -172,7 +172,7 @@ export function PcControlExperience() {
 
     try {
       setCameraState("카메라 권한 요청")
-      const stream = await navigator.mediaDevices.getUserMedia({ video: { width: { ideal: 960 }, height: { ideal: 540 }, facingMode: "user" }, audio: false })
+      const stream = await navigator.mediaDevices.getUserMedia({ video: { width: 1280, height: 720, facingMode: "user" }, audio: false })
       streamRef.current = stream
       if (videoRef.current) {
         videoRef.current.srcObject = stream
@@ -184,28 +184,16 @@ export function PcControlExperience() {
       setCameraState("손 추적 모델 로딩")
       const vision = await import("@mediapipe/tasks-vision")
       const fileset = await vision.FilesetResolver.forVisionTasks("/mediapipe/wasm")
-      const createLandmarker = (delegate: "GPU" | "CPU") =>
-        vision.HandLandmarker.createFromOptions(fileset, {
-          baseOptions: {
-            modelAssetPath: "/models/hand_landmarker.task",
-            delegate,
-          },
-          runningMode: "VIDEO",
-          numHands: 2,
-        })
-
-      try {
-        setCameraState("GPU 손 추적 모델 로딩")
-        landmarkerRef.current = await createLandmarker("GPU")
-        setCameraState("GPU 손 추적 중")
-        addLog("카메라", "GPU MediaPipe Hands 웹 추적을 시작했습니다.", "success")
-      } catch (gpuError) {
-        console.warn("GPU hand tracking initialization failed. Falling back to CPU.", gpuError)
-        setCameraState("GPU 실패, CPU 재시도")
-        landmarkerRef.current = await createLandmarker("CPU")
-        setCameraState("CPU 손 추적 중")
-        addLog("카메라", "GPU 초기화 실패로 CPU 손 추적을 시작했습니다.", "warning")
-      }
+      landmarkerRef.current = await vision.HandLandmarker.createFromOptions(fileset, {
+        baseOptions: {
+          modelAssetPath: "/models/hand_landmarker.task",
+          delegate: "CPU",
+        },
+        runningMode: "VIDEO",
+        numHands: 2,
+      })
+      setCameraState("손 추적 중")
+      addLog("카메라", "MediaPipe Hands 웹 추적을 시작했습니다.", "success")
     } catch (error) {
       console.error(error)
       const hasCameraStream = Boolean(streamRef.current)

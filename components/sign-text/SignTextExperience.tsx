@@ -63,6 +63,8 @@ type HolisticResultLike = HolisticFeatureInput & {
   }>
 }
 
+type OverlayPointMapper = (point: Landmark3D) => { x: number; y: number }
+
 type FinalizedSentence = {
   id: number
   text: string
@@ -112,7 +114,7 @@ const POSE_CONNECTIONS = [
 ] as const
 
 const SAMPLE_TOKENS = ["안녕하세요", "감사합니다", "네", "아니요"]
-const HOLISTIC_TRACKING_INTERVAL_MS = 1000 / 18
+const HOLISTIC_TRACKING_INTERVAL_MS = 1000 / 24
 const SIGN_UI_STATE_INTERVAL_MS = 1000 / 10
 const FINISH_PROGRESS_INTERVAL_MS = 1000 / 15
 
@@ -222,7 +224,7 @@ export function SignTextExperience() {
     try {
       setCameraState("카메라 권한 요청")
       const stream = await navigator.mediaDevices.getUserMedia({
-        video: { width: { ideal: 960 }, height: { ideal: 540 }, facingMode: "user" },
+        video: { width: 1280, height: 720, facingMode: "user" },
         audio: false,
       })
       streamRef.current = stream
@@ -236,31 +238,20 @@ export function SignTextExperience() {
 
       const vision = await import("@mediapipe/tasks-vision")
       const fileset = await vision.FilesetResolver.forVisionTasks("/mediapipe/wasm")
-      const createLandmarker = (delegate: "GPU" | "CPU") =>
-        vision.HolisticLandmarker.createFromOptions(fileset, {
-          baseOptions: {
-            modelAssetPath: "/models/holistic_landmarker.task",
-            delegate,
-          },
-          runningMode: "VIDEO",
-          outputFaceBlendshapes: true,
-          minFaceDetectionConfidence: 0.5,
-          minFacePresenceConfidence: 0.5,
-          minPoseDetectionConfidence: 0.5,
-          minPosePresenceConfidence: 0.5,
-          minHandLandmarksConfidence: 0.5,
-        })
-
-      try {
-        setCameraState("GPU Holistic 모델 로딩")
-        landmarkerRef.current = await createLandmarker("GPU")
-        setCameraState("GPU 손+얼굴 추적 중")
-      } catch (gpuError) {
-        console.warn("GPU holistic tracking initialization failed. Falling back to CPU.", gpuError)
-        setCameraState("GPU 실패, CPU 재시도")
-        landmarkerRef.current = await createLandmarker("CPU")
-        setCameraState("CPU 손+얼굴 추적 중")
-      }
+      landmarkerRef.current = await vision.HolisticLandmarker.createFromOptions(fileset, {
+        baseOptions: {
+          modelAssetPath: "/models/holistic_landmarker.task",
+          delegate: "CPU",
+        },
+        runningMode: "VIDEO",
+        outputFaceBlendshapes: true,
+        minFaceDetectionConfidence: 0.5,
+        minFacePresenceConfidence: 0.5,
+        minPoseDetectionConfidence: 0.5,
+        minPosePresenceConfidence: 0.5,
+        minHandLandmarksConfidence: 0.5,
+      })
+      setCameraState("손+얼굴 추적 중")
     } catch (error) {
       console.error(error)
       setCameraState("카메라 또는 Holistic 시작 실패")
@@ -624,15 +615,16 @@ export function SignTextExperience() {
     resizeCanvas(canvas)
     const width = canvas.clientWidth
     const height = canvas.clientHeight
+    const mapPoint = createOverlayPointMapper(video, width, height)
     context.clearRect(0, 0, width, height)
     context.save()
     context.lineCap = "round"
     context.lineJoin = "round"
 
-    drawPose(context, result.poseLandmarks?.[0] ?? [], width, height)
-    drawHand(context, result.leftHandLandmarks?.[0] ?? [], width, height, "#55e6a5")
-    drawHand(context, result.rightHandLandmarks?.[0] ?? [], width, height, "#58a6ff")
-    drawFace(context, result.faceLandmarks?.[0] ?? [], width, height)
+    drawPose(context, result.poseLandmarks?.[0] ?? [], mapPoint)
+    drawHand(context, result.leftHandLandmarks?.[0] ?? [], mapPoint, "#55e6a5")
+    drawHand(context, result.rightHandLandmarks?.[0] ?? [], mapPoint, "#58a6ff")
+    drawFace(context, result.faceLandmarks?.[0] ?? [], mapPoint)
     context.restore()
   }
 
@@ -1000,52 +992,76 @@ function resizeCanvas(canvas: HTMLCanvasElement) {
   context?.setTransform(scale, 0, 0, scale, 0, 0)
 }
 
-function drawPose(context: CanvasRenderingContext2D, pose: Landmark3D[], width: number, height: number) {
+function createOverlayPointMapper(video: HTMLVideoElement, canvasWidth: number, canvasHeight: number): OverlayPointMapper {
+  if (!video.videoWidth || !video.videoHeight || !canvasWidth || !canvasHeight) {
+    return (point) => ({ x: clamp((1 - point.x) * canvasWidth, 0, canvasWidth), y: clamp(point.y * canvasHeight, 0, canvasHeight) })
+  }
+
+  const scale = Math.max(canvasWidth / video.videoWidth, canvasHeight / video.videoHeight)
+  const displayWidth = video.videoWidth * scale
+  const displayHeight = video.videoHeight * scale
+  const cropX = (displayWidth - canvasWidth) / 2
+  const cropY = (displayHeight - canvasHeight) / 2
+
+  return (point) => ({
+    x: clamp((1 - point.x) * displayWidth - cropX, 0, canvasWidth),
+    y: clamp(point.y * displayHeight - cropY, 0, canvasHeight),
+  })
+}
+
+function drawPose(context: CanvasRenderingContext2D, pose: Landmark3D[], mapPoint: OverlayPointMapper) {
   if (!pose.length) return
   context.strokeStyle = "rgba(255, 196, 102, 0.92)"
   context.lineWidth = 3
   POSE_CONNECTIONS.forEach(([start, end]) => {
     if (!pose[start] || !pose[end]) return
-    drawLine(context, pose[start], pose[end], width, height)
+    drawLine(context, pose[start], pose[end], mapPoint)
   })
   ;[11, 12, 13, 14, 15, 16].forEach((index) => {
-    if (pose[index]) drawPoint(context, pose[index], width, height, 4, "rgba(255, 196, 102, 0.96)")
+    if (pose[index]) drawPoint(context, pose[index], mapPoint, 4, "rgba(255, 196, 102, 0.96)")
   })
 }
 
-function drawHand(context: CanvasRenderingContext2D, hand: Landmark3D[], width: number, height: number, color: string) {
+function drawHand(context: CanvasRenderingContext2D, hand: Landmark3D[], mapPoint: OverlayPointMapper, color: string) {
   if (!hand.length) return
   context.strokeStyle = color
   context.lineWidth = 2
   HAND_CONNECTIONS.forEach(([start, end]) => {
     if (!hand[start] || !hand[end]) return
-    drawLine(context, hand[start], hand[end], width, height)
+    drawLine(context, hand[start], hand[end], mapPoint)
   })
-  hand.forEach((point) => drawPoint(context, point, width, height, 3, color))
+  hand.forEach((point) => drawPoint(context, point, mapPoint, 3, color))
 }
 
-function drawFace(context: CanvasRenderingContext2D, face: Landmark3D[], width: number, height: number) {
+function drawFace(context: CanvasRenderingContext2D, face: Landmark3D[], mapPoint: OverlayPointMapper) {
   if (!face.length) return
   face.forEach((point, index) => {
-    if (index % 12 === 0) drawPoint(context, point, width, height, 1.6, "rgba(255,255,255,0.55)")
+    if (index % 12 === 0) drawPoint(context, point, mapPoint, 1.6, "rgba(255,255,255,0.55)")
   })
   ;[13, 14, 61, 291, 33, 263, 70, 300].forEach((index) => {
-    if (face[index]) drawPoint(context, face[index], width, height, 2.6, "rgba(255,255,255,0.86)")
+    if (face[index]) drawPoint(context, face[index], mapPoint, 2.6, "rgba(255,255,255,0.86)")
   })
 }
 
-function drawLine(context: CanvasRenderingContext2D, left: Landmark3D, right: Landmark3D, width: number, height: number) {
+function drawLine(context: CanvasRenderingContext2D, left: Landmark3D, right: Landmark3D, mapPoint: OverlayPointMapper) {
+  const start = mapPoint(left)
+  const end = mapPoint(right)
   context.beginPath()
-  context.moveTo((1 - left.x) * width, left.y * height)
-  context.lineTo((1 - right.x) * width, right.y * height)
+  context.moveTo(start.x, start.y)
+  context.lineTo(end.x, end.y)
   context.stroke()
 }
 
-function drawPoint(context: CanvasRenderingContext2D, point: Landmark3D, width: number, height: number, radius: number, color: string) {
+function drawPoint(context: CanvasRenderingContext2D, point: Landmark3D, mapPoint: OverlayPointMapper, radius: number, color: string) {
+  const mapped = mapPoint(point)
   context.fillStyle = color
   context.beginPath()
-  context.arc((1 - point.x) * width, point.y * height, radius, 0, Math.PI * 2)
+  context.arc(mapped.x, mapped.y, radius, 0, Math.PI * 2)
   context.fill()
+}
+
+function clamp(value: number, min: number, max: number) {
+  return Math.min(max, Math.max(min, value))
 }
 
 function averagePoint(points: Landmark3D[]) {
