@@ -94,6 +94,12 @@ type ExpressionFrame = {
   yaw: number | null
 }
 
+type SignNeighbor = {
+  index: number
+  label: string
+  distance: number
+}
+
 const EMPTY_FACE_EXPRESSION: FaceExpression = {
   label: "표정 대기",
   tone: "neutral",
@@ -117,6 +123,9 @@ const EXPRESSION_CALIBRATION_MS = 900
 const EXPRESSION_WINDOW_MS = 850
 const EXPRESSION_SWITCH_FRAMES = 2
 const EXPRESSION_NEUTRAL_FRAMES = 4
+const TEMPORAL_RERANK_CANDIDATES = 36
+const TEMPORAL_ALTERNATIVE_CANDIDATES = 12
+const TEMPORAL_DTW_BAND = 6
 
 export async function loadBaseBrowserKnnModel(path = "/models/sign_knn.browser.json") {
   const response = await fetch(path)
@@ -350,15 +359,15 @@ export function predictSignSequence(model: BrowserKnnModel, sequence: number[][]
   }
 
   const scaled = flat.map((value, index) => (value - model.scalerMean[index]) / safeScale(model.scalerScale[index]))
-  const nearest = model.samples
+  const flatNearest = model.samples
     .map((sample, index) => ({
       index,
       label: model.sampleLabels[index],
       distance: euclideanDistance(scaled, sample),
     }))
     .sort((left, right) => left.distance - right.distance)
-    .slice(0, model.neighbors)
 
+  const nearest = rerankTemporalNeighbors(scaled, flatNearest, model)
   const exact = nearest.find((item) => item.distance < 1e-9)
   if (exact) {
     return {
@@ -368,22 +377,42 @@ export function predictSignSequence(model: BrowserKnnModel, sequence: number[][]
     }
   }
 
-  const totals = new Map<string, number>()
-  nearest.forEach((item) => {
-    const weight = model.weights === "distance" ? 1 / Math.max(item.distance, 1e-9) : 1
-    totals.set(item.label, (totals.get(item.label) ?? 0) + weight)
-  })
-
-  const totalWeight = Array.from(totals.values()).reduce((sum, value) => sum + value, 0)
-  const alternatives = Array.from(totals.entries())
-    .map(([label, weight]) => ({ label, confidence: totalWeight ? weight / totalWeight : 0 }))
-    .sort((left, right) => right.confidence - left.confidence)
+  const alternatives = createTemporalAlternatives(nearest)
 
   return {
     label: alternatives[0]?.label ?? "대기",
     confidence: alternatives[0]?.confidence ?? 0,
     alternatives,
   }
+}
+
+function rerankTemporalNeighbors(scaled: number[], flatNearest: SignNeighbor[], model: BrowserKnnModel) {
+  const candidateCount = Math.min(TEMPORAL_RERANK_CANDIDATES, flatNearest.length)
+  if (!candidateCount) return []
+
+  return flatNearest
+    .slice(0, candidateCount)
+    .map((item) => ({
+      ...item,
+      distance: bandedTemporalDistance(scaled, model.samples[item.index], model.sequenceLength, model.featureSize),
+    }))
+    .sort((left, right) => left.distance - right.distance)
+}
+
+function createTemporalAlternatives(nearest: SignNeighbor[]) {
+  const bestByLabel = new Map<string, SignNeighbor>()
+  nearest.slice(0, TEMPORAL_ALTERNATIVE_CANDIDATES).forEach((item) => {
+    const previous = bestByLabel.get(item.label)
+    if (!previous || item.distance < previous.distance) {
+      bestByLabel.set(item.label, item)
+    }
+  })
+
+  const ranked = Array.from(bestByLabel.values()).sort((left, right) => left.distance - right.distance)
+  return ranked.map((item, index) => ({
+    label: item.label,
+    confidence: temporalConfidence(item.distance, ranked[index === 0 ? 1 : 0]?.distance),
+  }))
 }
 
 export function readFaceExpression(blendshapes?: BlendshapeResult[], hasFace = true): FaceExpression {
@@ -696,6 +725,49 @@ function euclideanDistance(left: number[], right: number[]) {
     sum += delta * delta
   }
   return Math.sqrt(sum)
+}
+
+function bandedTemporalDistance(left: number[], right: number[], sequenceLength: number, featureSize: number) {
+  const infinity = Number.POSITIVE_INFINITY
+  let previous = Array.from({ length: sequenceLength + 1 }, () => infinity)
+  let current = Array.from({ length: sequenceLength + 1 }, () => infinity)
+  previous[0] = 0
+
+  for (let leftFrame = 1; leftFrame <= sequenceLength; leftFrame += 1) {
+    current.fill(infinity)
+    const start = Math.max(1, leftFrame - TEMPORAL_DTW_BAND)
+    const end = Math.min(sequenceLength, leftFrame + TEMPORAL_DTW_BAND)
+    const leftOffset = (leftFrame - 1) * featureSize
+
+    for (let rightFrame = start; rightFrame <= end; rightFrame += 1) {
+      const rightOffset = (rightFrame - 1) * featureSize
+      current[rightFrame] =
+        frameDistance(left, leftOffset, right, rightOffset, featureSize) +
+        Math.min(previous[rightFrame], current[rightFrame - 1], previous[rightFrame - 1])
+    }
+
+    const nextPrevious = previous
+    previous = current
+    current = nextPrevious
+  }
+
+  return previous[sequenceLength] / (sequenceLength * 2)
+}
+
+function frameDistance(left: number[], leftOffset: number, right: number[], rightOffset: number, featureSize: number) {
+  let sum = 0
+  for (let index = 0; index < featureSize; index += 1) {
+    const delta = left[leftOffset + index] - right[rightOffset + index]
+    sum += delta * delta
+  }
+  return Math.sqrt(sum)
+}
+
+function temporalConfidence(distance: number, comparisonDistance?: number) {
+  if (!Number.isFinite(distance)) return 0
+  if (!Number.isFinite(comparisonDistance) || !comparisonDistance) return 0.98
+  const separation = clamp(1 - distance / Math.max(comparisonDistance, 1e-9), 0, 1)
+  return clamp(0.5 + separation * 2.2, 0.48, 0.98)
 }
 
 function safeScale(value: number) {

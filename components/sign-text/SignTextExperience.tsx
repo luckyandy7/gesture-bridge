@@ -116,6 +116,12 @@ const HOLISTIC_TRACKING_INTERVAL_MS = 1000 / 24
 const SIGN_UI_STATE_INTERVAL_MS = 1000 / 10
 const FINISH_PROGRESS_INTERVAL_MS = 1000 / 15
 const TRAINING_CAPTURE_FRAMES = 45
+const FINALIZE_LATEST_PREDICTION_MAX_AGE_MS = 5000
+const FINALIZE_LATEST_PREDICTION_MIN_CONFIDENCE = 0.45
+const STABLE_PREDICTION_MIN_CONFIDENCE = 0.5
+const STABLE_PREDICTION_WINDOW_MS = 1150
+const STABLE_PREDICTION_REQUIRED_MATCHES = 4
+const STABLE_PREDICTION_HISTORY_LIMIT = 10
 
 const EMPTY_EXPRESSION: FaceExpression = {
   label: "표정 대기",
@@ -143,6 +149,7 @@ export function SignTextExperience() {
   const memoryRef = useRef<SentenceMemoryEntry[]>([])
   const sequenceRef = useRef<number[][]>([])
   const predictionHistoryRef = useRef<Array<{ label: string; confidence: number; timestamp: number }>>([])
+  const latestPredictionRef = useRef<{ prediction: SignPrediction; expression: FaceExpression; timestamp: number } | null>(null)
   const tokensRef = useRef<TokenRecord[]>([])
   const expressionRef = useRef<FaceExpression>(EMPTY_EXPRESSION)
   const expressionTrackerRef = useRef(createFaceExpressionTracker())
@@ -276,6 +283,7 @@ export function SignTextExperience() {
     landmarkerRef.current = null
     sequenceRef.current = []
     predictionHistoryRef.current = []
+    latestPredictionRef.current = null
     pendingTrainingLabelRef.current = ""
     trainingSequenceRef.current = []
     trainingSaveInFlightRef.current = false
@@ -379,22 +387,45 @@ export function SignTextExperience() {
   const finalizeSentence = useCallback(
     async (reason: "gesture" | "manual" | "sample" = "manual") => {
       if (finalizingRef.current) return
-      const currentTokens = tokensRef.current
-      if (!currentTokens.length) return
+      let currentTokens = tokensRef.current
+      let sourceReason: string = reason
+      if (!currentTokens.length) {
+        const latest = latestPredictionRef.current
+        const latestAge = latest ? performance.now() - latest.timestamp : Number.POSITIVE_INFINITY
+        if (latest && latestAge <= FINALIZE_LATEST_PREDICTION_MAX_AGE_MS && isFinalizablePrediction(latest.prediction)) {
+          const latestToken: TokenRecord = {
+            id: tokenIdRef.current++,
+            label: latest.prediction.label,
+            confidence: latest.prediction.confidence,
+            timestamp: performance.now(),
+            expression: latest.expression,
+          }
+          currentTokens = [latestToken]
+          tokensRef.current = currentTokens
+          setTokens(currentTokens)
+          sourceReason = `${reason}:latest`
+        } else {
+          setLlmState("인식된 단어 없음")
+          setDraftSentence("문장으로 만들 단어가 없습니다.")
+          return
+        }
+      }
       finalizingRef.current = true
       setLlmState("LLM 문장 정리 중")
       try {
-        const localRefined = updateDraftSentence(currentTokens, expressionRef.current)
+        const sentenceExpression = currentTokens.at(-1)?.expression ?? expressionRef.current
+        const localRefined = updateDraftSentence(currentTokens, sentenceExpression)
         const refined = await refineWithServer(currentTokens, localRefined)
         const sentence: FinalizedSentence = {
           id: finalizedIdRef.current++,
           text: refined.sentence,
           score: refined.score,
-          source: `${reason}:${refined.source}`,
+          source: `${sourceReason}:${refined.source}`,
           tokens: currentTokens,
         }
         setFinalized((previous) => [sentence, ...previous].slice(0, 5))
         tokensRef.current = []
+        latestPredictionRef.current = null
         setTokens([])
         setDraftSentence(sentence.text)
         setFinishProgress(0)
@@ -425,6 +456,7 @@ export function SignTextExperience() {
     tokensRef.current = []
     sequenceRef.current = []
     predictionHistoryRef.current = []
+    latestPredictionRef.current = null
     pendingTrainingLabelRef.current = ""
     trainingSequenceRef.current = []
     trainingSaveInFlightRef.current = false
@@ -538,18 +570,18 @@ export function SignTextExperience() {
   }, [syncModelUi])
 
   const updateStablePrediction = useCallback((prediction: SignPrediction, now: number) => {
-    if (prediction.confidence < 0.58 || prediction.label === "대기" || prediction.label === "버퍼링") {
-      predictionHistoryRef.current = predictionHistoryRef.current.filter((item) => now - item.timestamp < 900)
+    if (prediction.confidence < STABLE_PREDICTION_MIN_CONFIDENCE || prediction.label === "대기" || prediction.label === "버퍼링") {
+      predictionHistoryRef.current = predictionHistoryRef.current.filter((item) => now - item.timestamp < STABLE_PREDICTION_WINDOW_MS)
       return null
     }
 
     predictionHistoryRef.current = [
-      ...predictionHistoryRef.current.filter((item) => now - item.timestamp < 950),
+      ...predictionHistoryRef.current.filter((item) => now - item.timestamp < STABLE_PREDICTION_WINDOW_MS),
       { label: prediction.label, confidence: prediction.confidence, timestamp: now },
-    ].slice(-8)
+    ].slice(-STABLE_PREDICTION_HISTORY_LIMIT)
 
     const matching = predictionHistoryRef.current.filter((item) => item.label === prediction.label)
-    if (matching.length >= 5) {
+    if (matching.length >= STABLE_PREDICTION_REQUIRED_MATCHES) {
       return {
         label: prediction.label,
         confidence: matching.reduce((sum, item) => sum + item.confidence, 0) / matching.length,
@@ -658,6 +690,9 @@ export function SignTextExperience() {
             frameIndexRef.current += 1
             if (frameIndexRef.current % 4 === 0) {
               const prediction = applyExpressionContext(predictSignSequence(model, sequenceRef.current), nextExpression)
+              if (isFinalizablePrediction(prediction)) {
+                latestPredictionRef.current = { prediction, expression: nextExpression, timestamp: now }
+              }
               lastPredictionUiAtRef.current = now
               setCurrentPrediction(prediction)
               const stable = updateStablePrediction(prediction, now)
@@ -1049,6 +1084,10 @@ function ConfidenceBar({ value }: { value: number }) {
       <div className="h-full bg-foreground transition-all duration-200" style={{ width: `${Math.max(0, Math.min(1, value)) * 100}%` }} />
     </div>
   )
+}
+
+function isFinalizablePrediction(prediction: SignPrediction) {
+  return prediction.confidence >= FINALIZE_LATEST_PREDICTION_MIN_CONFIDENCE && prediction.label !== "대기" && prediction.label !== "버퍼링"
 }
 
 function detectFinishSignal(result: HolisticResultLike) {
