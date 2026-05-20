@@ -396,7 +396,7 @@ export function SignTextExperience() {
         setFinalized((previous) => [sentence, ...previous].slice(0, 5))
         tokensRef.current = []
         setTokens([])
-        setDraftSentence("-")
+        setDraftSentence(sentence.text)
         setFinishProgress(0)
         speak(sentence.text)
         setLlmState(refined.usedLlm ? `LLM 완료 (${refined.model ?? "OpenAI"})` : "로컬 문장 보정")
@@ -822,18 +822,18 @@ export function SignTextExperience() {
 
                 <div className="min-w-0 md:w-[390px]">
                   <div className="flex items-center justify-between gap-3">
-                    <p className="text-xs text-foreground/48">문장 후보</p>
+                    <p className="text-xs text-foreground/48">{tokens.length || draftSentence === "-" ? "문장 후보" : "완성 문장"}</p>
                     <div className="h-1.5 w-24 overflow-hidden rounded-full bg-foreground/10">
                       <div className="h-full bg-foreground transition-all duration-200" style={{ width: `${finishProgress * 100}%` }} />
                     </div>
                   </div>
-                  <p className="mt-2 truncate text-lg font-light tracking-tight text-foreground md:text-2xl">{draftSentence}</p>
+                  <p className="mt-2 max-h-20 overflow-y-auto break-keep text-lg font-light leading-snug tracking-tight text-foreground md:text-2xl">{draftSentence}</p>
                 </div>
               </div>
             </div>
           </section>
 
-          <aside className="grid min-h-0 gap-4 lg:grid-rows-[auto_auto_auto_minmax(0,1fr)]">
+          <aside className="grid min-h-0 gap-4 lg:grid-rows-[auto_auto_minmax(0,1fr)_auto]">
             <Panel>
               <div className="flex items-start justify-between gap-4">
                 <div>
@@ -879,6 +879,31 @@ export function SignTextExperience() {
                   지우기
                 </button>
               </div>
+            </Panel>
+
+            <Panel className="min-h-0">
+              <div className="mb-3 flex items-center justify-between">
+                <h2 className="text-sm font-semibold">완성 문장</h2>
+                <span className="font-mono text-xs text-foreground/42">최근 5개</span>
+              </div>
+              <div className="min-h-0 space-y-3 overflow-y-auto pr-1">
+                {finalized.length ? (
+                  finalized.map((item) => (
+                    <div key={item.id} className="rounded-lg border border-foreground/10 bg-background/22 p-3">
+                      <p className="text-base leading-relaxed text-foreground">{item.text}</p>
+                      <div className="mt-3 flex flex-wrap items-center gap-2 text-[11px] text-foreground/50">
+                        <span className="font-mono">{Math.round(item.score * 100)}%</span>
+                        <span>{item.source}</span>
+                      </div>
+                    </div>
+                  ))
+                ) : (
+                  <div className="rounded-lg border border-dashed border-foreground/12 bg-background/18 p-4 text-sm leading-relaxed text-foreground/58">
+                    단어가 쌓인 뒤 문장 끝 신호를 유지하거나 상단의 문장 끝 버튼을 누르면 보이스 출력까지 실행됩니다.
+                  </div>
+                )}
+              </div>
+              {lastSpoken ? <p className="mt-3 truncate text-xs text-foreground/46">마지막 음성: {lastSpoken}</p> : null}
             </Panel>
 
             <Panel>
@@ -942,31 +967,6 @@ export function SignTextExperience() {
                   공유 학습 초기화
                 </button>
               </div>
-            </Panel>
-
-            <Panel className="min-h-0">
-              <div className="mb-3 flex items-center justify-between">
-                <h2 className="text-sm font-semibold">완성 문장</h2>
-                <span className="font-mono text-xs text-foreground/42">최근 5개</span>
-              </div>
-              <div className="min-h-0 space-y-3 overflow-y-auto pr-1">
-                {finalized.length ? (
-                  finalized.map((item) => (
-                    <div key={item.id} className="rounded-lg border border-foreground/10 bg-background/22 p-3">
-                      <p className="text-base leading-relaxed text-foreground">{item.text}</p>
-                      <div className="mt-3 flex flex-wrap items-center gap-2 text-[11px] text-foreground/50">
-                        <span className="font-mono">{Math.round(item.score * 100)}%</span>
-                        <span>{item.source}</span>
-                      </div>
-                    </div>
-                  ))
-                ) : (
-                  <div className="rounded-lg border border-dashed border-foreground/12 bg-background/18 p-4 text-sm leading-relaxed text-foreground/58">
-                    단어가 쌓인 뒤 문장 끝 신호를 유지하거나 상단의 문장 끝 버튼을 누르면 보이스 출력까지 실행됩니다.
-                  </div>
-                )}
-              </div>
-              {lastSpoken ? <p className="mt-3 truncate text-xs text-foreground/46">마지막 음성: {lastSpoken}</p> : null}
             </Panel>
           </aside>
         </div>
