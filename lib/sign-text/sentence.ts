@@ -32,8 +32,6 @@ export type SentenceMemoryPayload = {
 const COMMON_SENTENCES: Record<string, string> = {
   "안녕하세요": "안녕하세요.",
   "감사합니다": "감사합니다.",
-  "네": "네.",
-  "아니요": "아니요.",
   "죄송합니다": "죄송합니다.",
   "도와주세요": "도와주세요.",
   "괜찮아요": "괜찮아요.",
@@ -98,17 +96,13 @@ export function refineSentenceLikeLlm(tokens: TokenRecord[], candidate: Translat
     sentence = `${sentence.slice(0, -1)}?`
   }
 
-  if (expression.tone === "negative" && !labels.includes("아니요") && labels.length > 1) {
+  if (expression.tone === "negative" && labels.length > 1) {
     sentence = sentence.replace(/\.$/, "")
     sentence = `${sentence}라는 뜻으로 보이지만, 부정 표정이 함께 감지됐어요.`
   }
 
   if (expression.tone === "positive" && labels.includes("감사합니다")) {
     sentence = "감사합니다."
-  }
-
-  if (labels.includes("네") && expression.tone === "emphasis") {
-    sentence = "네, 알겠습니다."
   }
 
   return {

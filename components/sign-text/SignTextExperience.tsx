@@ -111,7 +111,7 @@ const POSE_CONNECTIONS = [
   [14, 16],
 ] as const
 
-const SAMPLE_TOKENS = ["안녕하세요", "감사합니다", "네", "아니요"]
+const SAMPLE_TOKENS = ["안녕하세요", "감사합니다"]
 const HOLISTIC_TRACKING_INTERVAL_MS = 1000 / 24
 const SIGN_UI_STATE_INTERVAL_MS = 1000 / 10
 const FINISH_PROGRESS_INTERVAL_MS = 1000 / 15
@@ -1026,8 +1026,6 @@ export function SignTextExperience() {
   function applyExpressionContext(prediction: SignPrediction, nextExpression: FaceExpression): SignPrediction {
     const boostByLabel: Record<string, number> = {
       "감사합니다": nextExpression.scores.smile * 0.08,
-      "아니요": nextExpression.scores.negative * 0.1,
-      "네": Math.max(nextExpression.scores.smile, nextExpression.scores.emphasis) * 0.07,
       "안녕하세요": Math.max(nextExpression.scores.smile, nextExpression.scores.question) * 0.05,
     }
     const boost = boostByLabel[prediction.label] ?? 0

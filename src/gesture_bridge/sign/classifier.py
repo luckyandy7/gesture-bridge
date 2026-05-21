@@ -70,7 +70,7 @@ def train_sign_classifier(
         raise RuntimeError(
             "At least 2 labels with collected samples are required for training. "
             "If you want to recognize `안녕하세요`, also collect at least one or two other labels "
-            "such as `감사합니다`, `네`, or `아니요`."
+            "such as `감사합니다`."
         )
 
     neighbor_count = max(1, min(neighbors, sample_count))
